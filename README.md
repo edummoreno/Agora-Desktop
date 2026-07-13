@@ -1,7 +1,7 @@
 
-#FORK For Desktop Version
+# FORK For Desktop Version
 
--
+---
 
 <div align="center">
   <img src="app/src/main/assets/agora_transparent_large.png" alt="Agora Logo" width="120" />
