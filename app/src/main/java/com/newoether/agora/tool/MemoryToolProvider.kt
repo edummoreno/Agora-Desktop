@@ -7,6 +7,8 @@ import com.newoether.agora.api.ToolProperty
 import com.newoether.agora.data.MemoryManager
 import com.newoether.agora.util.DebugLog
 import com.newoether.agora.viewmodel.GenerationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
@@ -69,29 +71,36 @@ class MemoryToolProvider(
                     ToolDefinition(
                         function = ToolFunction(
                             name = "edit_memory_file",
-                            description = "Edit, rename, or update the description of a file in the memory database. Use 'old_string' + 'new_string' for precise string replacement — the old_string must match exactly once in the file. Use 'content' for full rewrites (mutually exclusive with old_string). At least one of 'content', 'old_string', 'new_name', or 'description' must be provided.",
+                            description = "Edit one aspect of a memory file. operation must be replace, patch, rename, or describe.",
                             parameters = ToolParameters(
                                 properties = mapOf(
-                                    "name" to ToolProperty("string", "The current file name to edit."),
+                                    "name" to ToolProperty("string", "The current file name."),
+                                    "operation" to ToolProperty(
+                                        "string",
+                                        "One of: replace, patch, rename, describe."
+                                    ),
                                     "content" to ToolProperty(
                                         "string",
-                                        "The new markdown content (full rewrite). Omit to keep existing content. Mutually exclusive with 'old_string'."
+                                        "Complete replacement content for replace. May be empty."
                                     ),
                                     "old_string" to ToolProperty(
                                         "string",
-                                        "Exact string to find and replace. Must match exactly once in the file. Mutually exclusive with 'content'."
+                                        "Exact non-empty unique text to replace for patch."
                                     ),
                                     "new_string" to ToolProperty(
                                         "string",
-                                        "Replacement string for old_string. Pass empty string to delete the matched text. Required when old_string is provided."
+                                        "Replacement text for patch. May be empty to delete the match."
                                     ),
-                                    "new_name" to ToolProperty("string", "New file name to rename to. Omit to keep existing name."),
+                                    "new_name" to ToolProperty(
+                                        "string",
+                                        "The target file name for rename."
+                                    ),
                                     "description" to ToolProperty(
                                         "string",
-                                        "A short description of the file contents. Omit to keep existing description. Pass empty string to remove."
+                                        "The new description for describe. May be empty to remove it."
                                     )
                                 ),
-                                required = listOf("name")
+                                required = listOf("name", "operation")
                             )
                         )
                     ),
@@ -109,6 +118,15 @@ class MemoryToolProvider(
             )
         }
         if (ctx.accessActiveMemory) {
+            tools.add(
+                ToolDefinition(
+                    function = ToolFunction(
+                        name = "read_active_memory",
+                        description = "Read the current stored active memory. The copy in the system prompt is captured once per turn, so edits made during this turn appear here but not in the prompt until the next turn.",
+                        parameters = ToolParameters(properties = emptyMap())
+                    )
+                )
+            )
             tools.add(
                 ToolDefinition(
                     function = ToolFunction(
@@ -139,14 +157,24 @@ class MemoryToolProvider(
         return tools
     }
 
-    override suspend fun execute(name: String, arguments: String, ctx: GenerationContext): String {
+    override suspend fun execute(
+        name: String,
+        arguments: String,
+        ctx: GenerationContext,
+    ): String = executeOneShotResult(name, arguments, ctx).text
+
+    override suspend fun executeOneShotResult(
+        name: String,
+        arguments: String,
+        ctx: GenerationContext,
+    ): ToolExecutionResult = withContext(Dispatchers.IO) {
         val argsStr = arguments.ifBlank { "{}" }
         val args =
             Json.decodeFromString<Map<String, kotlinx.serialization.json.JsonElement>>(argsStr)
         fun arg(key: String): String =
             (args[key] as? JsonPrimitive)?.content ?: ""
 
-        return when (name) {
+        ToolExecutionResult(when (name) {
             "list_memory_files" -> {
                 val files = memoryManager.listFiles()
                 if (files.isEmpty()) {
@@ -184,7 +212,10 @@ class MemoryToolProvider(
                 } else if (singleName.isNotEmpty()) {
                     memoryManager.readFile(singleName)
                 } else {
-                    "Error: No file name provided. Use 'name' for a single file or 'names' for multiple files."
+                    return@withContext ToolExecutionResult(
+                        "Error: No file name provided. Use 'name' for a single file or 'names' for multiple files.",
+                        isError = true,
+                    )
                 }
             }
 
@@ -195,45 +226,68 @@ class MemoryToolProvider(
             )
 
             "edit_memory_file" -> {
-                val editContent = arg("content").ifBlank { null }
-                val oldStr = arg("old_string").ifBlank { null }
-                val newStr = arg("new_string")
-                val newName = arg("new_name").ifBlank { null }
-                val descArg = arg("description")
-                val desc = if (args.containsKey("description")) descArg else null
-                if (editContent != null && oldStr != null) {
-                    "Error: 'content' and 'old_string' are mutually exclusive. Use one or the other."
-                } else if (oldStr != null && !args.containsKey("new_string")) {
-                    "Error: 'old_string' requires 'new_string' (pass empty string to delete)."
-                } else if (editContent == null && oldStr == null && newName == null && desc == null) {
-                    "Error: At least 'content', 'old_string', 'new_name', or 'description' must be provided."
-                } else {
-                    memoryManager.editFile(
-                        arg("name"),
-                        editContent,
-                        newName,
-                        desc,
-                        oldStr,
-                        newStr
+                val fileName = arg("name")
+                when (arg("operation").trim().lowercase()) {
+                    "replace" -> memoryManager.editFile(
+                        name = fileName,
+                        content = arg("content"),
+                    )
+                    "patch" -> {
+                        val oldString = arg("old_string")
+                        if (oldString.isEmpty()) {
+                            return@withContext ToolExecutionResult(
+                                "Error: patch requires a non-empty old_string.", isError = true,
+                            )
+                        } else {
+                            memoryManager.editFile(
+                                name = fileName,
+                                oldString = oldString,
+                                newString = arg("new_string"),
+                            )
+                        }
+                    }
+                    "rename" -> {
+                        val newName = arg("new_name").takeIf(String::isNotBlank)
+                        if (newName == null) {
+                            return@withContext ToolExecutionResult(
+                                "Error: rename requires a non-blank new_name.", isError = true,
+                            )
+                        } else {
+                            memoryManager.editFile(
+                                name = fileName,
+                                newName = newName,
+                            )
+                        }
+                    }
+                    "describe" -> memoryManager.editFile(
+                        name = fileName,
+                        description = arg("description"),
+                    )
+                    else -> return@withContext ToolExecutionResult(
+                        "Error: operation must be replace, patch, rename, or describe.", isError = true,
                     )
                 }
             }
 
             "delete_memory_file" -> memoryManager.deleteFile(arg("name"))
 
+            "read_active_memory" -> memoryManager.getActiveMemory()
+
             "update_active_memory" -> {
                 val mode = arg("mode").ifBlank { "replace" }
                 val oldStr = arg("old_string").ifBlank { null }
                 val newStr = arg("new_string").ifBlank { null }
                 if (mode == "patch" && oldStr == null) {
-                    "Error: 'old_string' is required for patch mode."
+                    return@withContext ToolExecutionResult(
+                        "Error: 'old_string' is required for patch mode.", isError = true,
+                    )
                 } else {
                     memoryManager.updateActiveMemory(arg("content"), mode, oldStr, newStr)
                 }
             }
 
-            else -> "Unknown tool: $name"
-        }
+            else -> return@withContext ToolExecutionResult("Unknown tool: $name", isError = true)
+        })
     }
 
     override fun handles(name: String): Boolean = name in setOf(
@@ -242,6 +296,7 @@ class MemoryToolProvider(
         "create_memory_file",
         "edit_memory_file",
         "delete_memory_file",
+        "read_active_memory",
         "update_active_memory"
     )
 }

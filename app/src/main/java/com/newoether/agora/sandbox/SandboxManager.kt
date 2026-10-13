@@ -1,6 +1,9 @@
 package com.newoether.agora.sandbox
 
+import com.newoether.agora.util.ShellFileEditResult
+import com.newoether.agora.util.ShellFileReadResult
 import java.io.File
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -18,8 +21,8 @@ interface SandboxManager {
     /** Live package list — updated automatically after install/remove. */
     val packageList: StateFlow<List<PackageInfo>>
 
-    /** Global snackbar messages for install/remove/reset events. UI shows via SnackbarHost. */
-    val snackbarMessage: StateFlow<String?>
+    /** Process-local buffered one-shot messages for install/remove/upgrade/reset outcomes. */
+    val snackbarMessage: Flow<String>
 
     /** Load installed packages (call on UI init after confirming available). */
     suspend fun refreshPackageList()
@@ -70,8 +73,8 @@ interface SandboxManager {
         timeoutMs: Int = 30000
     ): SandboxResult
 
-    /** Read a file from the sandbox filesystem. */
-    suspend fun fileRead(path: String, offset: Long = 0, limit: Long = 0): String
+    /** Read a bounded file slice and return transport-neutral metadata. */
+    suspend fun fileRead(path: String, offset: Long = 0, limit: Long = 0): ShellFileReadResult
 
     /** Write a file into the sandbox filesystem. Returns null on success. */
     suspend fun fileWrite(path: String, content: String): String?
@@ -81,22 +84,26 @@ interface SandboxManager {
      * depth: null = recurse fully (legacy behavior); >= 1 = at most that many
      * directory levels below basePath; 0 = unlimited recursion.
      */
-    suspend fun fileGlob(pattern: String, basePath: String = "", depth: Int? = null): List<String>
+    suspend fun fileGlob(
+        pattern: String,
+        basePath: String = "",
+        depth: Int? = null,
+    ): Pair<List<String>, Boolean>
 
     /** Grep for a regex pattern within sandbox files. */
     suspend fun fileGrep(
         pattern: String,
         basePath: String = "",
         fileGlob: String = ""
-    ): Result<List<GrepMatch>>
+    ): Result<Pair<List<GrepMatch>, Boolean>>
 
-    /** Edit a file in the sandbox (read → replace → write). */
+    /** Edit a file atomically within the sandbox mutation boundary. */
     suspend fun fileEdit(
         path: String,
         oldString: String,
         newString: String,
         replaceAll: Boolean = false
-    ): FileEditResult
+    ): ShellFileEditResult
 
     /** Install a package via Alpine apk. */
     suspend fun apkInstall(packageName: String, onProgress: (String) -> Unit = {}): Boolean
@@ -119,26 +126,19 @@ interface SandboxManager {
     /** Physical directory mounted as /home inside the sandbox, or null if not available. */
     fun getSandboxHomeDir(): File?
 
-    /** Release any held resources. */
-    fun close()
-
     // ── Nested types ───────────────────────────────────────
 
     data class SandboxResult(
         val stdout: String,
         val stderr: String,
-        val exitCode: Int
+        val exitCode: Int,
+        val warning: String? = null,
     )
 
     data class GrepMatch(
         val path: String,
         val line: Int,
         val content: String
-    )
-
-    data class FileEditResult(
-        val replaced: Int,
-        val error: String? = null
     )
 
     data class PackageInfo(

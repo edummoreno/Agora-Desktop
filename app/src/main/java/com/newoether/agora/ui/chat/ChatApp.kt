@@ -1,30 +1,18 @@
 package com.newoether.agora.ui.chat
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.animation.core.Easing
-import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -33,168 +21,193 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.newoether.agora.R
+import com.newoether.agora.TopLevelPresentation
+import com.newoether.agora.api.DebugProvider
+import com.newoether.agora.data.forDisplay
+import com.newoether.agora.data.replaceCustomProviderIdsForDisplay
 import com.newoether.agora.util.gradientBlur
-import com.newoether.agora.model.Participant
+import com.newoether.agora.ui.chat.bottombar.CHAT_BOTTOM_BAR_OUTER_SHAPE
 import com.newoether.agora.ui.chat.bottombar.ChatBottomBar
-import com.newoether.agora.ui.chat.message.hasActiveAnswerSegment
+import com.newoether.agora.ui.chat.bottombar.LoopStatusBackdrop
+import com.newoether.agora.ui.chat.interaction.ChatUserInteractionBar
 import com.newoether.agora.ui.components.AnimatedBlobBackground
 import com.newoether.agora.ui.components.clearFocusOnTap
-import com.newoether.agora.ui.components.TypewriterText
 import com.newoether.agora.ui.common.LocalAgoraHaptics
 import com.newoether.agora.ui.common.rememberAgoraHaptics
-import com.newoether.agora.model.MessageStatus
+import com.newoether.agora.ui.motion.LocalAgoraMotionPolicy
+import com.newoether.agora.model.StableMessageList
+import com.newoether.agora.model.StableModelAliases
 import com.newoether.agora.viewmodel.ChatViewModel
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.first
+import com.newoether.agora.viewmodel.validChatModels
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 
-private val SCROLL_EASING = CubicBezierEasing(0.3f, 0.0f, 0.0f, 1.0f)
-
-// isVisibleAnswerSegment() / hasActiveAnswerSegment() are shared (internal) from
-// MessageItemSegments.kt.
-
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(
+    ExperimentalMaterial3Api::class,
+    ExperimentalFoundationApi::class,
+)
 @Composable
 fun ChatApp(
     viewModel: ChatViewModel,
+    initialComposerFocusReady: Boolean = true,
+    onNavigateBack: (() -> Unit)? = null,
+    drawerEnabled: Boolean = true,
+    openDrawerOnStart: Boolean = false, initialScrollToTop: Boolean = false,
     onOpenSettings: () -> Unit,
+    onOpenTasks: (String?) -> Unit = {},
+    onOpenRemote: () -> Unit = {},
     onMediaClick: (List<String>, Int) -> Unit,
     onFileContentClick: ((String, String) -> Unit)? = null,
-    onPdfPagesClick: ((List<String>, Int) -> Unit)? = null,
-    onPdfPreviewSelect: ((List<String>, Int) -> Unit)? = null,
+    onPdfPagesClick: ((List<String>, Int) -> Unit)? = null, onPdfPreviewSelect: ((List<String>, Int) -> Unit)? = null,
     pdfViewerSelection: Set<Int> = emptySet(),
     onTogglePdfSelection: ((Int) -> Unit)? = null,
     onInitPdfSelection: ((Set<Int>) -> Unit)? = null,
     fullScreenViewerUrls: List<String>? = null,
+    topLevelPresentation: TopLevelPresentation = TopLevelPresentation.CHAT,
     onSnackbarOffsetChanged: (androidx.compose.ui.unit.Dp) -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
-
-    val drawerState = rememberDrawerState(
-        initialValue = DrawerValue.Closed,
-        confirmStateChange = { newValue ->
-            if (newValue != DrawerValue.Closed) {
-                focusManager.clearFocus()
-            }
-            true
-        }
-    )
-
+    val context = LocalContext.current
+    val motionPolicy = LocalAgoraMotionPolicy.current
+    ConversationShareEffect(viewModel, context)
+    val drawerState = rememberChatDrawerState()
+    LaunchedEffect(openDrawerOnStart, drawerEnabled) {
+        if (openDrawerOnStart && drawerEnabled) drawerState.openImmediately()
+    }
     val conversations by viewModel.conversations.collectAsState()
-    val messages by viewModel.messages.collectAsState()
-    val allMessages by viewModel.allMessages.collectAsState()
+    // Defer value reads to the narrow composition regions that actually render messages. The
+    // State objects themselves are stable, so stream snapshots no longer recompose all ChatApp.
+    val messagesState = viewModel.messages.collectAsState()
+    val allMessagesState = viewModel.allMessages.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val isCompacting by viewModel.compactUi.isCompacting.collectAsState()
+    val compactModel by viewModel.settings.contextCompactModel.collectAsState()
+    val compactPrompt by viewModel.settings.contextCompactPrompt.collectAsState()
+    val compactRetainCount by viewModel.settings.contextCompactRetainCount.collectAsState()
+    val compactThresholdPercent by viewModel.settings.contextCompactThresholdPercent.collectAsState()
+    val compactEnabled by viewModel.settings.contextCompactEnabled.collectAsState()
+    val manualCompactDialogVisible = rememberSaveable { mutableStateOf(false) }
+    val dialogState = rememberChatAppDialogState(manualCompactDialogVisible)
+    val queuedSends by viewModel.queuedSends.collectAsState()
+    val isStopping by viewModel.isStopping.collectAsState()
     val currentConversationId by viewModel.currentConversationId.collectAsState()
-    val generatingInConversationId by viewModel.generatingInConversationId.collectAsState()
+    var pendingForkRequest by remember(currentConversationId) { mutableStateOf<ForkConversationRequest?>(null) }
+    val currentConversation by viewModel.currentConversation.collectAsState()
+    val loadedMessagesConversationId by viewModel.loadedMessagesConversationId.collectAsState()
+    val currentLoop by viewModel.currentLoop.collectAsState()
+    val runningLoopIds by viewModel.runningLoopConversationIds.collectAsState()
+    val generationSnapshot by viewModel.generationSnapshot.collectAsState()
+    val selectedConversationGenerationSnapshot by viewModel.selectedConversationGenerationSnapshot.collectAsState()
     val selectedModel by viewModel.currentActiveModel.collectAsState()
     val enabledModels by viewModel.settings.enabledModels.collectAsState()
+    val developerOptionsEnabled by viewModel.settings.developerOptionsEnabled.collectAsState()
+    val debugModelEnabled by viewModel.settings.debugModelEnabled.collectAsState()
     val modelAliases by viewModel.settings.modelAliases.collectAsState()
+    val modelProviderNames by viewModel.settings.modelProviderNames.collectAsState()
+    val chatEnabledModels = validChatModels(
+        enabledModels,
+        developerOptionsEnabled,
+        debugModelEnabled,
+    )
+    val chatModelAliases = if (DebugProvider.MODEL_ID in chatEnabledModels) {
+        modelAliases + (DebugProvider.MODEL_ID to DebugProvider.PROVIDER_NAME)
+    } else {
+        modelAliases
+    }
     val thoughtExpandedStates = remember(currentConversationId) { mutableStateMapOf<String, Boolean>() }
     val isNewChatMode by viewModel.isNewChatMode.collectAsState()
+    val newChatEntryId by viewModel.newChatEntryId.collectAsState()
     val isSwitching by viewModel.isSwitching.collectAsState()
+    val regenerationTransition by viewModel.regenerationTransitions.request.collectAsState()
     val isTransitioningToNewChat by viewModel.isTransitioningToNewChat.collectAsState()
-    val totalTokens by viewModel.totalTokens.collectAsState()
     val visualizeContextRollout by viewModel.settings.visualizeContextRollout.collectAsState()
-    val maxContextWindow by viewModel.settings.maxContextWindow.collectAsState()
-    val globalCodeExecution by viewModel.settings.codeExecutionEnabled.collectAsState()
-    val globalGoogleSearch by viewModel.settings.googleSearchEnabled.collectAsState()
-    val globalThinkingEnabled by viewModel.settings.thinkingEnabled.collectAsState()
-    val globalThinkingLevel by viewModel.settings.thinkingLevel.collectAsState()
-    val globalThinkingBudgetEnabled by viewModel.settings.thinkingBudgetEnabled.collectAsState()
-    val globalThinkingBudgetTokens by viewModel.settings.thinkingBudgetTokens.collectAsState()
-    val globalWebSearch by viewModel.settings.webSearchEnabled.collectAsState()
+    val customProviders by viewModel.settings.customProviders.collectAsState()
+    val displayConversations = remember(conversations, customProviders) { conversations.orEmpty().map { it.forDisplay(customProviders) } }
+    val displayMessagesState = remember(messagesState, customProviders) { derivedStateOf { messagesState.value.map { it.forDisplay(customProviders) } } }
     val webSearchApiKeys by viewModel.settings.webSearchApiKeys.collectAsState()
-    val globalShell by viewModel.settings.shellEnabled.collectAsState()
     val shellDevices by viewModel.settings.shellDevices.collectAsState()
+    val amoledEnabled by viewModel.settings.amoledEnabled.collectAsState()
     val toolCallDisplayMode by viewModel.settings.toolCallDisplayMode.collectAsState()
-    val conversationSettings by viewModel.settings.conversationSettings.collectAsState()
-    val pendingSettings by viewModel.pendingConversationSettings.collectAsState()
-    // Resolved per-conversation values: override → global default
-    val convId = currentConversationId
-    val convOverride = if (convId != null) conversationSettings[convId] else pendingSettings
-    val codeExecutionEnabled = convOverride?.codeExecutionEnabled ?: globalCodeExecution
-    val googleSearchEnabled = convOverride?.googleSearchEnabled ?: globalGoogleSearch
-    val thinkingEnabled = convOverride?.thinkingEnabled ?: globalThinkingEnabled
-    val thinkingLevel = convOverride?.thinkingLevel ?: globalThinkingLevel
-    val thinkingBudgetEnabled = convOverride?.thinkingBudgetEnabled ?: globalThinkingBudgetEnabled
-    val thinkingBudgetTokens = convOverride?.thinkingBudgetTokens ?: globalThinkingBudgetTokens
-    // Web Search and Shell: global switch OFF → always false, regardless of override
-    val webSearchEnabled = globalWebSearch && (convOverride?.webSearchEnabled ?: true)
-    val shellEnabled = globalShell && (convOverride?.shellEnabled ?: true)
-    val contextWindow = convOverride?.contextWindow ?: maxContextWindow
+    val thinkingSegmentDisplayMode by viewModel.settings.thinkingSegmentDisplayMode.collectAsState()
+    val autoExpandActiveGroup by viewModel.settings.autoExpandActiveGroup.collectAsState()
+
+    val parseInlineDollarMath by viewModel.settings.parseInlineDollarMath.collectAsState()
+    val autoWrapCodeBlocks by viewModel.settings.autoWrapCodeBlocks.collectAsState()
+    val conversationControls = effectiveConversationControls(
+        viewModel = viewModel,
+        isNewChatMode = isNewChatMode,
+        currentConversationId = currentConversationId,
+        selectedModel = selectedModel,
+        customProviders = customProviders,
+    )
+    val contextProjectionKey = rememberContextProjectionInvalidationKey(
+        viewModel,
+        listOf(
+            conversationControls.codeExecutionEnabled,
+            conversationControls.googleSearchEnabled,
+            conversationControls.webSearchEnabled,
+            conversationControls.shellEnabled,
+            shellDevices,
+            currentConversation?.systemPromptId,
+            conversationControls.lowContextModeEnabled,
+        ),
+    )
+    val contextProjection by viewModel.conversationContextProjection.collectAsState()
+    LaunchedEffect(currentConversationId, currentConversation?.selectedBranchesJson, selectedModel, conversationControls.contextWindow, allMessagesState.value, contextProjectionKey) {
+        viewModel.requestConversationContext(currentConversationId, currentConversation?.selectedBranchesJson, selectedModel, conversationControls.contextWindow)
+    }
+    val contextProjectionReady = contextProjection.completed && !contextProjection.loading && !contextProjection.failed && contextProjection.conversationId == currentConversationId && contextProjection.selectedBranchesJson == currentConversation?.selectedBranchesJson
+    val contextUsage = contextProjection.usage ?: com.newoether.agora.api.util.ContextWindowUsage(0, conversationControls.contextWindow, 0, false)
     val blurEffectsEnabled by viewModel.settings.blurEffectsEnabled.collectAsState()
+    val stickToBottom by viewModel.settings.stickToBottom.collectAsState()
+    val reduceMotion = motionPolicy.reduceMotion
     val hapticsEnabled by viewModel.settings.hapticsEnabled.collectAsState()
-    val haptics = rememberAgoraHaptics(hapticsEnabled)
+    val haptics = rememberAgoraHaptics(hapticsEnabled && topLevelPresentation == TopLevelPresentation.CHAT)
+    val chatWindow = LocalWindowInfo.current
+    val chatHapticActive = topLevelPresentation == TopLevelPresentation.CHAT &&
+        chatWindow.isWindowFocused && !drawerState.shouldHandleBack
+    // The three send paths (manual Send, queue drain, loop cycle) converge in the Controller at
+    // notifySendAccepted, the single choke point for Direct + Queued send acceptances. Wiring the
+    // haptics there gives each visible accepted send one confirm(), independent of its send path.
+    // Covered acceptances are consumed silently instead of replaying feedback after an overlay exits.
+    SendAcceptedHapticBindingEffect(viewModel, haptics, chatHapticActive)
 
-
-    var showRenameDialog by remember { mutableStateOf<String?>(null) }
-    var conversationToRename by remember { mutableStateOf("") }
-    var showDeleteConfirmDialog by remember { mutableStateOf<String?>(null) }
-    var showPromptDialog by remember { mutableStateOf(false) }
-    var showAdvancedDialog by remember { mutableStateOf(false) }
     var isExpanded by remember { mutableStateOf(false) }
-    var outerSpacerStartNanos by remember { mutableLongStateOf(0L) }
-    var outerSpacerTickNanos by remember { mutableLongStateOf(0L) }
-    val spacerDurationMs = 400f
-    val spacerEasing = remember { CubicBezierEasing(0.15f, 0.5f, 0.25f, 1.0f) }
+    // Composer-expand spacer collapse (44dp → 0). An Animatable driven from an effect replaces the
+    // former hand-rolled clock, which wrote animation state DURING composition (Compose forbids
+    // that — it makes the frame's output depend on when it happened to be composed) and ticked on
+    // a fixed 16ms sleep that drifts against the real refresh rate.
+    val composerSpacerAnimation = rememberComposerSpacerAnimation(
+        isExpanded = isExpanded,
+        allowSpatialTransitions = motionPolicy.allowSpatialTransitions,
+        expandedHeightPx = with(density) { 44.dp.toPx() },
+    )
+    val isExpandAnimating = composerSpacerAnimation.isRunning
+    val outerSpacerHeightPx = composerSpacerAnimation.outerHeightPx
 
-    // Start timing synchronously on the first expand frame; never reset
-    if (isExpanded && outerSpacerStartNanos == 0L) {
-        outerSpacerStartNanos = System.nanoTime()
+    val windowSize = LocalWindowInfo.current.containerSize
+    val windowHeightDp = with(density) {
+        windowSize.height.toDp().value.coerceAtLeast(1f)
     }
-    if (!isExpanded) {
-        outerSpacerStartNanos = 0L
-        outerSpacerTickNanos = 0L
-    }
-
-    val spacerElapsedMs = if (outerSpacerStartNanos > 0L) {
-        val tick = if (outerSpacerTickNanos > 0L) outerSpacerTickNanos else outerSpacerStartNanos
-        ((tick - outerSpacerStartNanos) / 1_000_000f).coerceIn(0f, spacerDurationMs)
-    } else 0f
-
-    val isExpandAnimating = outerSpacerStartNanos > 0L && spacerElapsedMs < spacerDurationMs
-
-    LaunchedEffect(isExpanded) {
-        if (isExpanded) {
-            while (true) {
-                outerSpacerTickNanos = System.nanoTime()
-                if ((outerSpacerTickNanos - outerSpacerStartNanos) / 1_000_000f >= spacerDurationMs) break
-                delay(16L)
-            }
-        }
-    }
-
-    val outerSpacerHeightPx: Float = if (outerSpacerStartNanos > 0L) {
-        val easedFraction = spacerEasing.transform(spacerElapsedMs / spacerDurationMs)
-        with(density) { 44.dp.toPx() } * (1f - easedFraction)
-    } else 0f
-
-    val configuration = LocalConfiguration.current
-    val drawerWidth = configuration.screenWidthDp.dp * 0.8f
     var bottomBarHeightPx by rememberSaveable { mutableFloatStateOf(0f) }
     val bottomBarHeight = with(density) { bottomBarHeightPx.toDp() }
-    val drawerWidthPx = with(density) { drawerWidth.toPx() }
+    // Measured by the interaction bar so the scroll-to-bottom button clears it as well.
+    var interactionBarHeightPx by remember { mutableFloatStateOf(0f) }
+    val interactionBarHeight = with(density) { interactionBarHeightPx.toDp() }
     var drawerProgress by remember { mutableFloatStateOf(0f) }
     // Bottom offset to clear the Settings button in the drawer.
     var settingsButtonTopDp by remember { mutableFloatStateOf(80f) }
@@ -204,269 +217,164 @@ fun ChatApp(
     // at the very bottom. Snackbar must clear: nav bar + IME + Surface outer padding + Box
     // bottom padding + Row height/margin + a small gap.
     val bottomInset = maxOf(navBarBottom, imeBottom)
-    val expandedCapsuleOffset = bottomInset + 74.dp
-    val targetSnackbarOffset = if (drawerProgress <= 0.5f) {
-        if (isExpanded) expandedCapsuleOffset else (bottomBarHeight - 4.dp).coerceAtLeast(0.dp)
-    } else {
-        val t = ((drawerProgress - 0.5f) * 2f).coerceIn(0f, 1f)
-        (bottomBarHeight.value + (settingsButtonTopDp - bottomBarHeight.value) * t).dp
-    }
-    LaunchedEffect(targetSnackbarOffset) { onSnackbarOffsetChanged(targetSnackbarOffset) }
-    val listState = rememberLazyListState()
+    SnackbarOffsetEffect(
+        drawerProgress = drawerProgress,
+        isExpanded = isExpanded,
+        bottomBarHeight = bottomBarHeight,
+        settingsButtonTopDp = settingsButtonTopDp,
+        bottomInset = bottomInset,
+        onOffsetChanged = onSnackbarOffsetChanged,
+    )
+    val imeBottomPx = with(density) { imeBottom.roundToPx() }
+    val scrollCoordinator = rememberChatScrollCoordinator(
+        currentConversationId,
+        imeBottomPx,
+    )
+    scrollCoordinator.BindLayoutObservation(
+        currentConversationId = currentConversationId,
+        loadedMessagesConversationId = loadedMessagesConversationId,
+        imeBottomPx = imeBottomPx,
+        density = density,
+    )
+    val listState = scrollCoordinator.listState
+    ScreenshotInitialScrollEffect(initialScrollToTop, currentConversationId, loadedMessagesConversationId, listState)
+    val absoluteBottomScrollPhase = scrollCoordinator.absoluteBottomScrollPhase
+    val isNearAbsoluteBottom = scrollCoordinator.isNearAbsoluteBottom
+    val isWithinAbsoluteBottomAttachThreshold =
+        scrollCoordinator.isWithinAbsoluteBottomAttachThreshold
+    val imeBottomAnchorState = scrollCoordinator.imeBottomAnchorState
+    val streamingTailController = scrollCoordinator.streamingTailController
+    val messageLifecycleAppearanceRegistry = scrollCoordinator.messageLifecycleAppearanceRegistry
+    val messageHeights = scrollCoordinator.messageHeights
+    val viewportHeightPx = scrollCoordinator.viewportHeightPx
+    val renderMessagesState = rememberScrollIsolatedMessages(
+        conversationId = currentConversationId,
+        upstream = messagesState,
+        listState = listState,
+        bypassScrollIsolation =
+            streamingTailController.isAutoFollowing || absoluteBottomScrollPhase.isActive,
+    )
+    val messageHydration = rememberChatMessageHydrationBindings(viewModel, customProviders)
+    val conversationInteraction = rememberConversationInteractionState(
+        currentConversationId = currentConversationId,
+        messages = displayMessagesState,
+        listState = listState,
+        searchMessages = messageHydration.searchMessages,
+    )
+    val conversationSearchActive = conversationInteraction.searchActive
+    val conversationSearchQuery = conversationInteraction.searchQuery
+    val conversationSearchMatchIndex = conversationInteraction.searchMatchIndex
+    val shareSelectionActive = conversationInteraction.shareSelectionActive
+    val selectedShareMessageIds = conversationInteraction.selectedShareMessageIds
+    val selectableShareMessageIds = conversationInteraction.selectableShareMessageIds
+    val shareSelectionBarSpace = if (shareSelectionActive) 68.dp else 0.dp
+    val conversationSearchMatches = conversationInteraction.searchMatches
     val textFieldState = rememberSaveable(saver = androidx.compose.foundation.text.input.TextFieldState.Saver) { androidx.compose.foundation.text.input.TextFieldState() }
+    val sandboxEnabled by viewModel.settings.sandboxEnabled.collectAsState()
+    val composer = com.newoether.agora.ui.chat.bottombar.rememberChatComposerState(
+        sandboxEnabled,
+        viewModel.isSandboxFlavor,
+    )
     val inputFocusRequester = remember { FocusRequester() }
-
-    val messageHeights = remember { androidx.compose.runtime.mutableStateMapOf<String, Int>() }
-    var viewportHeightPx by remember { mutableIntStateOf(0) }
-
     var showLaunchContent by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        delay(50)
-        showLaunchContent = true
-        inputFocusRequester.requestFocus()
-    }
+    ChatLaunchInteractionEffects(
+        initialComposerFocusReady = initialComposerFocusReady,
+        inputFocusRequester = inputFocusRequester,
+        onShowLaunchContent = { showLaunchContent = true },
+    )
 
+    scrollCoordinator.BindTransitionEffects(
+        currentConversationId = currentConversationId,
+        currentConversation = currentConversation,
+        loadedMessagesConversationId = loadedMessagesConversationId,
+        messages = messagesState,
+        density = density,
+        motionPolicy = motionPolicy,
+        bottomBarHeight = bottomBarHeight,
+        shareSelectionBarSpace = shareSelectionBarSpace,
+        imeBottomPx = imeBottomPx,
+        viewModel = viewModel,
+        haptics = haptics,
+        chatPresented = topLevelPresentation == TopLevelPresentation.CHAT,
+    )
 
-    suspend fun scrollToLastUserMessage(animate: Boolean = true, targetMessageId: String? = null, easing: Easing = FastOutSlowInEasing) {
-        if (messages.isEmpty() || viewportHeightPx == 0) return
+    val composerOwnerId = if (isNewChatMode) com.newoether.agora.viewmodel.NEW_CHAT_WORKSPACE_ID else currentConversationId ?: com.newoether.agora.viewmodel.NEW_CHAT_WORKSPACE_ID
+    val composerSnapshot by rememberComposerDraftSnapshot(
+        ownerId = composerOwnerId,
+        controller = viewModel.conversationComposer,
+        viewModel = viewModel,
+        textFieldState = textFieldState,
+    )
 
-        val targetIndex = if (targetMessageId != null) {
-            val msg = messages.find { it.id == targetMessageId }
-            if (msg?.participant == Participant.MODEL && msg.parentId != null) {
-                messages.indexOfFirst { it.id == msg.parentId }
-            } else {
-                messages.indexOfFirst { it.id == targetMessageId }
-            }
-        } else {
-            messages.indexOfLast { it.participant == Participant.USER }
-        }
-        if (targetIndex == -1) return
+    val animatedScrollRequest by viewModel.scrollRequests.request.collectAsState()
+    scrollCoordinator.BindRequestEffects(
+        currentConversationId = currentConversationId,
+        isNewChatMode = isNewChatMode,
+        isLoading = isLoading,
+        isStopping = isStopping,
+        isSwitching = isSwitching,
+        conversationSearchActive = conversationSearchActive,
+        shareSelectionActive = shareSelectionActive,
+        regenerationTransition = regenerationTransition,
+        animatedScrollRequest = animatedScrollRequest,
+        messages = messagesState,
+        density = density,
+        motionPolicy = motionPolicy,
+        bottomBarHeight = bottomBarHeight,
+        shareSelectionBarSpace = shareSelectionBarSpace,
+        onRegenerationScrollFinished = viewModel.regenerationTransitions::acknowledgeScroll,
+        onRegenerationTransitionFinished = viewModel.regenerationTransitions::complete,
+        onAnimatedScrollFinished = viewModel.scrollRequests::complete,
+    )
 
-        with(density) {
-            val targetTopPx = 140.dp.toPx()
-            val topPaddingPx = 140.dp.toPx()
+    ChatNavigationEffects(
+        drawerState = drawerState,
+        focusManager = focusManager,
+        scope = scope,
+        motionPolicy = motionPolicy,
+        onNavigateBack = onNavigateBack,
+        conversationInteraction = conversationInteraction,
+        onCollapseComposer = { isExpanded = false },
+    )
 
-            var totalHeightBeforePx = 0
-            var hasAnyHeight = false
-            for (i in 0 until targetIndex) {
-                val h = messageHeights[messages[i].id]
-                if (h != null) { totalHeightBeforePx += h; hasAnyHeight = true }
-            }
-
-            if (!hasAnyHeight && targetIndex > 0) {
-                listState.scrollToItem(targetIndex, 0)
-            } else {
-                val targetScrollPx = (topPaddingPx + totalHeightBeforePx - targetTopPx).coerceAtLeast(0f)
-
-                if (animate) {
-                    var currentOffsetPx = listState.firstVisibleItemScrollOffset.toFloat()
-                    for (i in 0 until listState.firstVisibleItemIndex) {
-                        if (i < messages.size) {
-                            currentOffsetPx += (messageHeights[messages[i].id] ?: 0)
-                        }
-                    }
-
-                    val diff = targetScrollPx - currentOffsetPx
-                    if (kotlin.math.abs(diff) > 2) {
-                        listState.animateScrollBy(diff, tween(600, easing = easing))
-                    }
-                } else {
-                    listState.scrollToItem(0, targetScrollPx.toInt())
-                }
-            }
-        }
-    }
-
-    val branchSwitchTrigger by viewModel.branchSwitchTrigger.collectAsState()
-
-    LaunchedEffect(branchSwitchTrigger) {
-        val targetMessageId = branchSwitchTrigger ?: return@LaunchedEffect
-        if (currentConversationId == null) {
-            viewModel.clearBranchSwitchTrigger()
-            viewModel.setSwitching(false)
-            return@LaunchedEffect
-        }
-
-        try {
-            val currentMsgs = withTimeout(4000) {
-                snapshotFlow { messages }
-                    .filter { currentMsgs -> currentMsgs.any { it.id == targetMessageId } }
-                    .first()
-            }
-
-            val msg = currentMsgs.find { it.id == targetMessageId }
-            val currentTargetIndex = if (msg?.participant == Participant.MODEL && msg.parentId != null) {
-                val parentIndex = currentMsgs.indexOfFirst { it.id == msg.parentId }
-                if (parentIndex != -1) parentIndex else currentMsgs.indexOfFirst { it.id == targetMessageId }
-            } else {
-                currentMsgs.indexOfFirst { it.id == targetMessageId }
-            }
-
-            if (currentTargetIndex != -1) {
-                listState.scrollToItem(currentTargetIndex, 0)
-            }
-        } catch (e: Exception) {
-            // Timeout or intended cancellation
-        }
-        viewModel.clearBranchSwitchTrigger()
-        viewModel.setSwitching(false)
-    }
-
-    LaunchedEffect(currentConversationId) {
-        // New chat's first send creates the conversation; its own scroll-to-message handles
-        // scrolling, so skip this conversation-open auto-scroll once to avoid a double scroll.
-        if (viewModel.suppressNextOpenScroll) {
-            viewModel.suppressNextOpenScroll = false
-            viewModel.setSwitching(false)
-            return@LaunchedEffect
-        }
-        if (currentConversationId != null) {
-            snapshotFlow { messages }.filter { it.isNotEmpty() }.first()
-            val targetIndex = messages.indexOfLast { it.participant == Participant.USER }
-
-            if (targetIndex != -1) {
-                try {
-                    withTimeout(4000) {
-                        snapshotFlow {
-                            val sum = messageHeights.values.sum()
-                            Triple(messages, sum, viewportHeightPx)
-                        }.collectLatest { data ->
-                            val currentMsgs = data.component1()
-                            val vHeight = data.component3()
-
-                            val currentTargetIndex = currentMsgs.indexOfLast { it.participant == Participant.USER }
-
-                            if (currentTargetIndex != -1 && vHeight > 0) {
-                                with(density) {
-                                    var totalHeightBeforePx = 0
-                                    for (i in 0 until currentTargetIndex) {
-                                        totalHeightBeforePx += messageHeights[currentMsgs[i].id] ?: 0
-                                    }
-                                    listState.scrollToItem(currentTargetIndex, 0)
-                                }
-                            }
-
-                            delay(500)
-                            this@withTimeout.cancel()
-                        }
-                    }
-                } catch (e: Exception) {
-                    // Timeout or intended cancellation
-                }
-            }
-            viewModel.setSwitching(false)
-        } else {
-            viewModel.setSwitching(false)
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        viewModel.scrollToMessage.collect { messageId ->
-            if (messageId != null) {
-                try {
-                    withTimeout(2000) {
-                        snapshotFlow { messages.indexOfFirst { it.id == messageId } }
-                            .filter { it != -1 }
-                            .first()
-                    }
-                } catch (e: Exception) {
-                    // Timeout
-                }
-                delay(50)
-                scrollToLastUserMessage(animate = true, targetMessageId = messageId)
-            } else {
-                scrollToLastUserMessage(animate = true)
-            }
-        }
-    }
-
-    BackHandler(enabled = drawerState.currentValue != DrawerValue.Closed || drawerState.targetValue != DrawerValue.Closed) {
-        focusManager.clearFocus()
-        scope.launch { drawerState.close() }
-    }
-
-    LaunchedEffect(drawerState.currentValue) {
-        if (drawerState.currentValue != DrawerValue.Closed) {
-            isExpanded = false
-            focusManager.clearFocus()
-        }
-    }
-
-    var observedGeneration by remember { mutableStateOf(isLoading) }
-    var previousIsLoading by remember { mutableStateOf(isLoading) }
-    LaunchedEffect(isLoading) {
-        when {
-            isLoading && !previousIsLoading -> {
-                observedGeneration = true
-            }
-            !isLoading && previousIsLoading && observedGeneration -> {
-                val terminalStatus = messages.lastOrNull { it.participant == Participant.MODEL }?.status
-                when (terminalStatus) {
-                    MessageStatus.ERROR -> haptics.reject()
-                    MessageStatus.STOPPED -> haptics.generationStopped()
-                    else -> haptics.generationEnd()
-                }
-                observedGeneration = false
-            }
-        }
-        previousIsLoading = isLoading
-    }
-
-    val answeringHapticActive = isLoading &&
-        generatingInConversationId == currentConversationId &&
-        messages.lastOrNull { it.participant == Participant.MODEL }?.let { message ->
-            message.status == MessageStatus.SENDING && message.hasActiveAnswerSegment()
-        } == true
-    DisposableEffect(answeringHapticActive, hapticsEnabled) {
-        if (answeringHapticActive && hapticsEnabled) {
-            haptics.startAnsweringTexture()
-        }
-        onDispose {
-            haptics.stopAnsweringTexture()
-        }
-    }
-
-    var pendingDrawerConversationHaptic by remember { mutableStateOf<String?>(null) }
-    var previousIsSwitching by remember { mutableStateOf(isSwitching) }
-    LaunchedEffect(isSwitching, currentConversationId) {
-        if (
-            previousIsSwitching &&
-            !isSwitching &&
-            pendingDrawerConversationHaptic != null &&
-            pendingDrawerConversationHaptic == currentConversationId
-        ) {
-            haptics.success()
-            pendingDrawerConversationHaptic = null
-        }
-        previousIsSwitching = isSwitching
-    }
+    AnsweringHapticEffect(
+        generationSnapshot = selectedConversationGenerationSnapshot,
+        topLevelPresentation = topLevelPresentation,
+        hapticsEnabled = hapticsEnabled && chatHapticActive,
+        haptics = haptics,
+    )
 
     CompositionLocalProvider(LocalAgoraHaptics provides haptics) {
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        gesturesEnabled = true,
-        scrimColor = DrawerDefaults.scrimColor,
-        drawerContent = {
+    ChatDrawerHost(
+        state = drawerState,
+        drawerEnabled = drawerEnabled,
+        motionPolicy = motionPolicy,
+        onDrawerProgress = { drawerProgress = it },
+        drawerContent = { drawerWidth, onRequestClose ->
             ChatDrawerContent(
                 viewModel = viewModel,
                 drawerWidth = drawerWidth,
-                drawerState = drawerState,
                 scope = scope,
                 inputFocusRequester = inputFocusRequester,
-                onDrawerProgress = { drawerProgress = it },
+                onRequestClose = onRequestClose,
                 onSettingsButtonTop = { settingsButtonTopDp = it },
                 onOpenSettings = onOpenSettings,
-                onRequestRename = { id, title -> showRenameDialog = id; conversationToRename = title },
-                onRequestDelete = { id -> showDeleteConfirmDialog = id },
-                onPendingDrawerHaptic = { pendingDrawerConversationHaptic = it }
+                onOpenTasks = { onOpenTasks(null) },
+                onOpenRemote = onOpenRemote,
+                onRequestRename = dialogState::requestRename,
+                onRequestDelete = { conversationId ->
+                    if (!viewModel.isConversationDeleteLocked(conversationId)) {
+                        dialogState.requestDelete(conversationId)
+                    }
+                },
             )
-        }
+        },
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .clearFocusOnTap()
-                .onSizeChanged { viewportHeightPx = it.height }
+                .onSizeChanged { scrollCoordinator.recordViewportHeight(it.height) }
         ) {
             val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
             val (targetCa, targetQa) = if (!dark) {
@@ -478,345 +386,411 @@ fun ChatApp(
             }
             val ca by animateFloatAsState(targetCa, tween(800))
             val qa by animateFloatAsState(targetQa, tween(800))
-            AnimatedBlobBackground(centerAlpha = ca, quarterAlpha = qa, blurRadius = 40f, dark = dark)
+            val newChatMotion = newChatMotionPolicy(
+                reduceMotion = reduceMotion,
+                isNewChatMode = isNewChatMode,
+                isLoading = isLoading,
+                isSwitching = isSwitching,
+                newChatEntryId = newChatEntryId,
+            )
+            if (!amoledEnabled) {
+                AnimatedBlobBackground(
+                    centerAlpha = ca,
+                    quarterAlpha = qa,
+                    blurRadius = 40f,
+                    dark = dark,
+                    blurEnabled = blurEffectsEnabled,
+                    motionEnabled = newChatMotion.animateBackground,
+                )
+            }
 
+            @Suppress("UnusedMaterial3ScaffoldPaddingParameter")
             Scaffold(
                 containerColor = Color.Transparent,
                 contentWindowInsets = WindowInsets(0, 0, 0, 0),
                 topBar = {
                     ChatTopBar(
                         isNewChatMode = isNewChatMode,
-                        conversations = conversations,
+                        conversations = displayConversations,
                         currentConversationId = currentConversationId,
-                        totalTokens = totalTokens,
-                        onOpenDrawer = { haptics.action(); focusManager.clearFocus(); scope.launch { drawerState.open() } },
-                        onSystemPromptClick = { haptics.action(); showPromptDialog = true },
+                        currentConversationTitle = currentConversation?.title?.let {
+                            replaceCustomProviderIdsForDisplay(it, customProviders)
+                        },
+                        totalTokens = contextUsage.estimatedTokenCount,
+                        contextTokenBudget = contextUsage.tokenBudget,
+                        searchActive = conversationSearchActive,
+                        searchQuery = conversationSearchQuery,
+                        searchMatchIndex = conversationSearchMatchIndex,
+                        searchMatchCount = conversationSearchMatches.size,
+                        conversationActionsEnabled =
+                            !isNewChatMode && currentConversationId != null && !isLoading &&
+                                !shareSelectionActive,
+                        systemPromptEnabled = !conversationControls.lowContextModeEnabled,
+                        onNavigateBack = onNavigateBack,
+                        onOpenDrawer = {
+                            if (drawerEnabled) {
+                                scope.launch { drawerState.toggle(motionPolicy) }
+                            }
+                        },
+                        onSearchQueryChange = { query ->
+                            conversationInteraction.updateSearchQuery(query)
+                        },
+                        onSearchPrevious = {
+                            if (conversationInteraction.previousSearchMatch()) {
+                                haptics.selection()
+                            }
+                        },
+                        onSearchNext = {
+                            if (conversationInteraction.nextSearchMatch()) {
+                                haptics.selection()
+                            }
+                        },
+                        onSearchDismiss = {
+                            conversationInteraction.dismissSearch()
+                            focusManager.clearFocus()
+                        },
+                        onSearchClick = {
+                            conversationInteraction.activateSearch()
+                        },
+                        onSystemPromptClick = dialogState::showPrompt,
+                        onForkConversation = { pendingForkRequest = ForkConversationRequest(messageId = null) },
+                        onShareConversation = {
+                            conversationInteraction.dismissSearch()
+                            focusManager.clearFocus()
+                            conversationInteraction.activateShareSelection()
+                        },
                         onNewChat = {
-                            haptics.action()
-                            isExpanded = false
-                            viewModel.createNewChat()
-                            inputFocusRequester.requestFocus()
+                            if (!isNewChatMode) {
+                                isExpanded = false
+                                viewModel.createNewChat()
+                                inputFocusRequester.requestFocus()
+                            }
                         },
                     )
                 }
-            ) { padding ->
-                Box(modifier = Modifier.fillMaxSize()) {
+            ) { padding -> Box(modifier = Modifier.fillMaxSize()) {
                     val topBarH = androidx.compose.foundation.layout.WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 64.dp
-                    val pivotY = ((LocalConfiguration.current.screenHeightDp + topBarH.value / 2f - bottomBarHeight.value) / 2f).coerceAtLeast(0f) / LocalConfiguration.current.screenHeightDp
+                    val pivotY =
+                        ((windowHeightDp + topBarH.value / 2f - bottomBarHeight.value) / 2f)
+                            .coerceAtLeast(0f) / windowHeightDp
                     AnimatedContent(
                         targetState = Pair(isNewChatMode, showLaunchContent),
                         transitionSpec = {
-                            val targetNewChat = targetState.first
-                            val targetShowLaunch = targetState.second
-                            val initialNewChat = initialState.first
-                            val initialShowLaunch = initialState.second
-
-                            if (targetNewChat && (targetShowLaunch != initialShowLaunch || targetNewChat != initialNewChat)) {
-                                // Entering new-chat mode: scale+fade animation
-                                val enterSpec = tween<Float>(700, easing = CubicBezierEasing(0.2f, 0.8f, 0.2f, 1.0f))
-                                val fadeInSpec = tween<Float>(500)
-                                (fadeIn(animationSpec = fadeInSpec) + scaleIn(initialScale = 0.6f, transformOrigin = TransformOrigin(0.5f, pivotY), animationSpec = enterSpec))
-                                    .togetherWith(fadeOut(animationSpec = tween(300)))
-                            } else if (!targetNewChat && !initialNewChat) {
-                                // Switching between existing conversations: no animation
-                                EnterTransition.None togetherWith ExitTransition.None
-                            } else {
-                                // Returning from new-chat to an existing conversation
-                                fadeIn(animationSpec = tween(300))
-                                    .togetherWith(fadeOut(animationSpec = tween(300)))
-                            }
+                            chatMainContentTransition(motionPolicy, pivotY)
                         },
                         label = "MainContentTransition",
                         modifier = Modifier.fillMaxSize()
                     ) { (targetNewChat, targetShowLaunch) ->
                         if (!targetNewChat) {
-                            val messageListModifier = if (blurEffectsEnabled) {
-                                Modifier.fillMaxSize().gradientBlur(blurAtTopDp = 8f, blurAtBottomDp = 0f)
-                            } else {
-                                Modifier.fillMaxSize()
-                            }
+                            val streamingFollowAvailability = streamingTailAvailability(
+                                generationActive = isLoading,
+                                blocked =
+                                    isStopping ||
+                                        isSwitching ||
+                                        conversationSearchActive ||
+                                        shareSelectionActive ||
+                                        !motionPolicy.allowProgrammaticScrollMotion,
+                                programmaticHandoff =
+                                    imeBottomAnchorState.active ||
+                                        absoluteBottomScrollPhase.isActive ||
+                                        animatedScrollRequest?.conversationId ==
+                                            currentConversationId ||
+                                        regenerationTransition?.conversationId ==
+                                            currentConversationId,
+                            )
+                            Box(modifier = Modifier.fillMaxSize()) {
                             MessageList(
-                                messages = messages,
-                                allMessages = allMessages,
-                                modifier = messageListModifier,
+                                messages = StableMessageList(renderMessagesState.value),
+                                authoritativeMessages = StableMessageList(displayMessagesState.value),
+                                allMessages = StableMessageList(allMessagesState.value),
+                                conversationId = currentConversationId,
+                                modifier = Modifier.align(Alignment.Center)
+                                    .fillMaxHeight().widthIn(max = 840.dp).fillMaxWidth()
+                                    .gradientBlur(
+                                    blurAtTopDp = if (blurEffectsEnabled) 8f else 0f,
+                                    blurAtBottomDp = 0f,
+                                    fadeHeightDp = 40f,
+                                    bottomOverlayHeight = bottomBarHeight + with(density) { outerSpacerHeightPx.toDp() } + 12.dp,
+                                ),
                                 state = listState,
-                                // Global generation gate: while ANY generation is in
-                                // progress, all per-message actions (edit / delete /
-                                // regenerate / branch-switch) are disabled. Bound to the
-                                // global isLoading so there is no per-conversation timing
-                                // window (generatingInConversationId is set asynchronously).
+                                // Per-conversation generation gate: isLoading mirrors the OPEN
+                                // conversation's slot only (ConversationGenerationState.onActive
+                                // gates on current == id), so message actions freeze while THIS
+                                // conversation generates — background conversations don't affect it.
                                 isLoading = isLoading,
+                                isCompacting = isCompacting,
+                                compactPreview = viewModel.compactUi.compactPreview,
+                                isStopping = isStopping,
                                 isSwitching = isSwitching,
-                                visualizeContextRollout = visualizeContextRollout,
+                                streamingMessage = generationSnapshot.streamingMessage?.forDisplay(customProviders),
+                                streamingAutoFollowEnabled =
+                                    streamingFollowAvailability.enabled && stickToBottom,
+                                streamingAutoFollowPaused =
+                                    streamingFollowAvailability.paused,
+                                streamingTailWithinAttachThreshold =
+                                    isWithinAbsoluteBottomAttachThreshold,
+                                programmaticScrollActive =
+                                    animatedScrollRequest?.conversationId ==
+                                        currentConversationId,
+                                streamingTailController = streamingTailController,
+                                regenerationTransition = regenerationTransition,
+                                onRegenerationFadeOutFinished =
+                                    viewModel.regenerationTransitions::acknowledgeFade,
+                                visualizeContextRollout = visualizeContextRollout && contextProjectionReady,
                                 toolCallDisplayMode = toolCallDisplayMode,
-                                maxContextWindow = contextWindow,
-                                modelAliases = modelAliases,
-                                bottomBarHeight = bottomBarHeight,
+                                thinkingSegmentDisplayMode = thinkingSegmentDisplayMode,
+                                autoExpandActiveGroup = autoExpandActiveGroup,
+                                parseInlineDollarMath = parseInlineDollarMath,
+                                autoWrapCodeBlocks = autoWrapCodeBlocks,
+                                contextRetainedMessageIds = contextProjection.retainedMessageIds.orEmpty(),
+                                modelAliases = StableModelAliases(modelAliases, modelProviderNames),
+                                customProviders = customProviders,
+                                bottomBarHeight = bottomBarHeight + shareSelectionBarSpace,
                                 viewportHeight = viewportHeightPx,
                                 messageHeights = messageHeights,
+                                observeMessage = messageHydration.observeMessage,
+                                onMessageHydrated = scrollCoordinator::recordMessageHydrated,
+                                lifecycleAppearanceRegistry = messageLifecycleAppearanceRegistry,
+                                lifecycleEntranceTargetMessageId = animatedScrollRequest
+                                    ?.takeIf { it.conversationId == currentConversationId }
+                                    ?.targetMessageId,
                                 onEditMessage = { id, text ->
-                                    val isFirstMessage = messages.isEmpty()
-                                    viewModel.editMessage(id, text)
-                                    scope.launch {
-                                        if (!isFirstMessage) {
-                                            delay(50)
-                                            scrollToLastUserMessage(animate = true)
-                                        }
-                                    }
+                                    val accepted = viewModel.editMessage(id, text)
+                                    if (accepted) haptics.confirm()
+                                    accepted
                                 },
                                 onSwitchBranch = { parentId, currentMessageId, direction ->
                                     haptics.selection()
                                     viewModel.switchBranch(parentId, currentMessageId, direction)
                                 },
                                 onRegenerate = { id ->
-                                    haptics.action()
-                                    viewModel.regenerate(id)
-                                    scope.launch {
-                                        delay(50)
-                                        scrollToLastUserMessage(animate = true)
+                                    val accepted = viewModel.regenerate(id)
+                                    if (accepted) haptics.confirm()
+                                    accepted
+                                },
+                                onFork = { id -> pendingForkRequest = ForkConversationRequest(messageId = id) },
+                                onShare = { id ->
+                                    viewModel.shareGeneration(id)
+                                },
+                                onRecompact = { id ->
+                                    viewModel.compactUi.startRecompact(id)
+                                },
+                                onDelete = { id, result ->
+                                    viewModel.deleteMessage(id, result) > 0
+                                },
+                                onDeleteConversation = { expectedIds, result ->
+                                    currentConversationId?.let { id ->
+                                        viewModel.deleteConversation(id, expectedIds, result)
+                                    } ?: false
+                                },
+                                searchQuery = if (conversationSearchActive) {
+                                    conversationSearchQuery
+                                } else {
+                                    ""
+                                },
+                                activeSearchMatch = conversationSearchMatches
+                                    .getOrNull(conversationSearchMatchIndex),
+                                onSearchMatchDistance =
+                                    conversationInteraction::recordSearchMatchDistance,
+                                onSearchTurnsChanged = conversationInteraction::recordSearchTurns,
+                                selectionMode = shareSelectionActive,
+                                selectedMessageIds = selectedShareMessageIds,
+                                onToggleMessageSelection = { messageId ->
+                                    haptics.selection()
+                                    conversationInteraction.toggleShareMessage(messageId)
+                                },
+                                onMediaClick = { urls, index ->
+                                    onMediaClick(urls, index)
+                                },
+                                onFileContentClick = onFileContentClick?.let { open ->
+                                    { name, content ->
+                                        open(name, content)
                                     }
                                 },
-                                onDelete = { id -> viewModel.deleteMessage(id) },
-                                onMediaClick = onMediaClick,
-                                onFileContentClick = onFileContentClick,
-                                onPdfPagesClick = { pages, idx -> haptics.action(); onPdfPagesClick?.invoke(pages, idx) },
+                                onPdfPagesClick = { pages, idx ->
+                                    onPdfPagesClick?.invoke(pages, idx)
+                                },
                                 thoughtExpandedStates = thoughtExpandedStates,
                                 contentPadding = PaddingValues(
                                     start = 8.dp,
                                     end = 8.dp,
                                     top = 140.dp,
-                                    bottom = bottomBarHeight + 8.dp
+                                    bottom = bottomBarHeight + shareSelectionBarSpace + 8.dp
                                 )
                             )
-                        } else if (targetShowLaunch) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(bottom = bottomBarHeight),
-                                contentAlignment = Alignment.TopCenter
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .verticalScroll(rememberScrollState()),
-                                    contentAlignment = Alignment.TopCenter
-                                ) {
-                                    TypewriterText(
-                                        text = stringResource(R.string.welcome_to_agora),
-                                        style = MaterialTheme.typography.headlineMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onBackground,
-                                        modifier = Modifier.padding(top = ((LocalConfiguration.current.screenHeightDp + topBarH.value / 2f - bottomBarHeight.value) / 2).coerceAtLeast(0f).dp)
-                                    )
-                                }
                             }
+                        } else if (targetShowLaunch) {
+                            ChatWelcomeContent(
+                                bottomBarHeight, windowHeightDp, topBarH, newChatEntryId, newChatMotion,
+                            )
                         } else {
                             Box(modifier = Modifier.fillMaxSize())
                         }
                     }
 
-                    val showButton by remember {
-                        derivedStateOf {
-                            if (isNewChatMode) false
-                            else {
-                                val info = listState.layoutInfo
-                                val total = info.totalItemsCount
-                                total > 1 && info.visibleItemsInfo.none { it.index == total - 2 }
-                            }
-                        }
+                    // Recreate for every plain value captured by this derived state.
+                    val regenerationScrollActive =
+                        regenerationTransition?.conversationId == currentConversationId &&
+                            regenerationTransition?.scrollFinished == false
+                    val showButton by rememberAbsoluteBottomButtonVisible(
+                        conversationId = currentConversationId,
+                        loadedMessagesConversationId = loadedMessagesConversationId,
+                        isNewChatMode = isNewChatMode,
+                        isSwitching = isSwitching,
+                        shareSelectionActive = shareSelectionActive,
+                        isNearAbsoluteBottom = isNearAbsoluteBottom,
+                        absoluteBottomScrollPhase = absoluteBottomScrollPhase,
+                        listState = listState,
+                        streamingTailController = streamingTailController,
+                        regenerationScrollActive = regenerationScrollActive,
+                        imeBottomAnchorActive = imeBottomAnchorState.active,
+                    )
+                    ChatBottomScrollButton(showButton, bottomBarHeight + interactionBarHeight) {
+                        scrollCoordinator.requestAbsoluteBottomScroll()
                     }
 
-                    val fabElevation by animateDpAsState(
-                        targetValue = if (showButton) 4.dp else 0.dp,
-                        animationSpec = tween(400)
+                    ChatSelectionOverlay(
+                        shareSelectionActive, motionPolicy, bottomBarHeight,
+                        selectableShareMessageIds, selectedShareMessageIds,
+                        conversationInteraction, haptics,
+                        onShareMessages = { viewModel.shareMessages(it) },
                     )
 
-                    AnimatedVisibility(
-                        visible = showButton,
-                        enter = fadeIn(tween(400)) + scaleIn(initialScale = 0.6f, animationSpec = tween(400)),
-                        exit = fadeOut(tween(400)) + scaleOut(targetScale = 0.6f, animationSpec = tween(400)),
-                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = bottomBarHeight + 8.dp)
-                    ) {
-                        Box(modifier = Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-                            FloatingActionButton(onClick = { scope.launch { scrollToLastUserMessage(animate = true, easing = SCROLL_EASING) } }, containerColor = MaterialTheme.colorScheme.surfaceColorAtElevation(4.dp), contentColor = MaterialTheme.colorScheme.onSurface, shape = CircleShape, elevation = FloatingActionButtonDefaults.elevation(fabElevation), modifier = Modifier.size(40.dp)) {
-                                Icon(Icons.Default.KeyboardArrowDown, stringResource(R.string.scroll_to_bottom), modifier = Modifier.size(24.dp))
-                            }
-                        }
-                    }
-
-                    AnimatedVisibility(
-                        visible = isSwitching && !isTransitioningToNewChat,
-                        enter = fadeIn(animationSpec = tween(200)),
-                        exit = fadeOut(animationSpec = tween(200))
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.background),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(48.dp),
-                                strokeWidth = 5.dp,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                    }
+                    ChatSwitchingOverlay(isSwitching, isTransitioningToNewChat, topBarH, bottomBarHeight)
                 }
             }
 
-            val gradientTopPaddingPx = with(density) { 20.dp.toPx() }
-            val gradientWidthPx = with(density) { 40.dp.toPx() }
-            val bgColor = MaterialTheme.colorScheme.background
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .then(if (isExpanded) Modifier.fillMaxHeight().statusBarsPadding() else Modifier)
-                    .drawBehind {
-                        val totalH = size.height
-                        if (totalH > 0f) {
-                            val (transparentEnd, fadeEnd) = if (isExpanded) {
-                                // In expanded mode, keep the gradient compact at the top
-                                val h = gradientTopPaddingPx.coerceAtMost(totalH * 0.12f)
-                                val w = gradientWidthPx.coerceAtMost(totalH * 0.24f)
-                                (h / totalH) to ((h + w) / totalH)
-                            } else {
-                                val te = (gradientTopPaddingPx / totalH).coerceIn(0f, 1f)
-                                val fe = ((gradientTopPaddingPx + gradientWidthPx) / totalH).coerceIn(0f, 1f)
-                                te to fe
-                            }
-                            drawRect(
-                                brush = Brush.verticalGradient(
-                                    colorStops = arrayOf(
-                                        0.0f to Color.Transparent,
-                                        transparentEnd to Color.Transparent,
-                                        fadeEnd to bgColor,
-                                    ),
-                                    startY = 0f,
-                                    endY = totalH
-                                )
-                            )
-                        }
-                    },
-                color = Color.Transparent
+            // Pending questions and shell confirmations sit above the composer instead of in a
+            // dialog, so the conversation stays readable while they wait for an answer.
+            ChatUserInteractionBar(
+                viewModel = viewModel,
+                conversationId = currentConversationId,
+                autoWrapCodeBlocks = autoWrapCodeBlocks,
+                bottomBarHeight = bottomBarHeight,
+                onHeightChanged = { interactionBarHeightPx = it },
+            )
+
+            com.newoether.agora.ui.chat.bottombar.ChatComposerSurface(
+                modifier = Modifier.align(Alignment.BottomCenter),
+                contentMaxWidth = 840.dp,
+                isExpanded = isExpanded,
+                outerSpacerHeightPx = outerSpacerHeightPx,
+                onBarHeightChanged = { bottomBarHeightPx = it },
+                backdrop = {
+                    LoopStatusBackdrop(
+                        loop = currentLoop,
+                        isRunning = currentConversationId in runningLoopIds,
+                        onStop = { viewModel.stopCurrentLoop() },
+                    )
+                },
             ) {
-                Column {
-                    if (outerSpacerHeightPx > 0f) {
-                        Spacer(modifier = Modifier.height(with(density) { outerSpacerHeightPx.toDp() }))
-                    }
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .then(if (isExpanded) Modifier.fillMaxHeight() else Modifier)
-                            .onSizeChanged {
-                            if (!isExpanded) bottomBarHeightPx = it.height.toFloat()
-                        }
-                        .navigationBarsPadding()
-                        .imePadding()
-                        .padding(8.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 2.dp,
-                    shadowElevation = 8.dp,
-                    shape = RoundedCornerShape(28.dp)
-                ) {
-                    Box(
-                        contentAlignment = Alignment.BottomCenter
-                    ) {
-                        ChatBottomBar(
-                        onSendMessage = { text, attachments ->
-                            viewModel.sendMessage(text, attachments = attachments).also { sent ->
-                                if (sent) {
-                                    haptics.action()
-                                    scope.launch {
-                                        delay(200)
-                                        scrollToLastUserMessage(animate = true)
-                                    }
-                                }
-                            }
-                        },
+                                ChatBottomBar(
+                        submissionController = viewModel.conversationComposerSubmission,
+                        composerOwnerId = composerOwnerId,
+                        composerController = viewModel.conversationComposer,
+                        composerSnapshot = composerSnapshot,
                         onStopGeneration = {
-                            haptics.generationStopped()
+                            haptics.interrupt()
                             viewModel.stopGeneration()
                         },
                         isLoading = isLoading,
+                        isCompacting = isCompacting,
                         isSwitching = isSwitching,
-                        enabledModels = enabledModels,
+                        enabledModels = chatEnabledModels,
                         selectedModel = selectedModel,
-                        modelAliases = modelAliases,
-                        codeExecutionEnabled = codeExecutionEnabled,
-                        googleSearchEnabled = googleSearchEnabled,
-                        thinkingEnabled = thinkingEnabled,
-                        thinkingLevel = thinkingLevel,
-                        thinkingBudgetEnabled = thinkingBudgetEnabled,
-                        thinkingBudgetTokens = thinkingBudgetTokens,
-                        onCodeExecutionToggle = { enabled -> haptics.selection(); viewModel.updateConversationSetting(currentConversationId) { it.copy(codeExecutionEnabled = enabled) } },
-                        onGoogleSearchToggle = { enabled -> haptics.selection(); viewModel.updateConversationSetting(currentConversationId) { it.copy(googleSearchEnabled = enabled) } },
-                        onThinkingToggle = { enabled -> haptics.selection(); viewModel.updateConversationSetting(currentConversationId) { it.copy(thinkingEnabled = enabled) } },
-                        onThinkingLevelChange = { level -> viewModel.updateConversationSetting(currentConversationId) { it.copy(thinkingLevel = level) } },
-                        onThinkingBudgetEnabledChange = { enabled -> viewModel.updateConversationSetting(currentConversationId) { it.copy(thinkingBudgetEnabled = enabled) } },
-                        onThinkingBudgetTokensChange = { tokens -> viewModel.updateConversationSetting(currentConversationId) { it.copy(thinkingBudgetTokens = tokens) } },
-                        webSearchEnabled = webSearchEnabled,
-                        onWebSearchToggle = { enabled -> haptics.selection(); viewModel.updateConversationSetting(currentConversationId) { it.copy(webSearchEnabled = enabled) } },
-                        shellEnabled = shellEnabled,
-                        onShellToggle = { enabled -> haptics.selection(); viewModel.updateConversationSetting(currentConversationId) { it.copy(shellEnabled = enabled) } },
-                        onModelSelect = { haptics.selection(); viewModel.setActiveModel(it) },
-                        onImageClick = { url -> haptics.action(); onMediaClick(listOf(url), 0) },
-                        onAllMediaClick = { urls, idx -> haptics.action(); onMediaClick(urls, idx) },
-                        onFileContentClick = { name, content -> haptics.action(); viewModel.showFilePreview(name, content) },
+                        modelAliases = chatModelAliases,
+                        modelProviderNames = modelProviderNames,
+                        customProviders = customProviders,
+                        codeExecutionEnabled = conversationControls.codeExecutionEnabled,
+                        googleSearchEnabled = conversationControls.googleSearchEnabled,
+                        thinkingEnabled = conversationControls.thinkingEnabled, thinkingLevel = conversationControls.thinkingLevel,
+                        thinkingBudgetEnabled = conversationControls.thinkingBudgetEnabled, thinkingBudgetTokens = conversationControls.thinkingBudgetTokens,
+                        openAiWebSearchAvailable = conversationControls.openAiWebSearchAvailable,
+                        openAiWebSearchEnabled = conversationControls.openAiWebSearchEnabled,
+                        onOpenAiWebSearchToggle = { enabled -> updateOpenAiNativeSearch(viewModel, conversationControls.settingsOwnerId, haptics, enabled) },
+                        openAiServiceTierAvailable = conversationControls.openAiServiceTierState.available,
+                        openAiServiceTierEnabled = conversationControls.openAiServiceTierState.enabled,
+                        openAiServiceTier = conversationControls.openAiServiceTierState.tier,
+                        onOpenAiServiceTierToggle = { enabled -> updateOpenAiConversationServiceTierEnabled(viewModel, conversationControls.settingsOwnerId, haptics, enabled) },
+                        onOpenAiServiceTierChange = { tier -> updateOpenAiConversationServiceTier(viewModel, conversationControls.settingsOwnerId, haptics, tier) },
+                        onCodeExecutionToggle = { enabled -> haptics.toggle(enabled); viewModel.updateConversationSetting(conversationControls.settingsOwnerId) { it.copy(codeExecutionEnabled = enabled) } },
+                        onGoogleSearchToggle = { enabled -> haptics.toggle(enabled); viewModel.updateConversationSetting(conversationControls.settingsOwnerId) { it.copy(googleSearchEnabled = enabled) } },
+                        onThinkingToggle = { enabled -> haptics.toggle(enabled); viewModel.updateConversationSetting(conversationControls.settingsOwnerId) { it.copy(thinkingEnabled = enabled) } },
+                        onThinkingLevelChange = { level -> viewModel.updateConversationSetting(conversationControls.settingsOwnerId) { it.copy(thinkingLevel = level) } },
+                        onThinkingBudgetEnabledChange = { enabled -> haptics.toggle(enabled); viewModel.updateConversationSetting(conversationControls.settingsOwnerId) { it.copy(thinkingBudgetEnabled = enabled) } },
+                        onThinkingBudgetTokensChange = { tokens -> viewModel.updateConversationSetting(conversationControls.settingsOwnerId) { it.copy(thinkingBudgetTokens = tokens) } },
+                        webSearchEnabled = conversationControls.webSearchEnabled,
+                        onWebSearchToggle = { enabled -> haptics.toggle(enabled); viewModel.updateConversationSetting(conversationControls.settingsOwnerId) { it.copy(webSearchEnabled = enabled) } },
+                        shellEnabled = conversationControls.shellEnabled,
+                        onShellToggle = { enabled -> haptics.toggle(enabled); viewModel.updateConversationSetting(conversationControls.settingsOwnerId) { it.copy(shellEnabled = enabled) } },
+                        showLowContextMode = conversationControls.showLowContextMode,
+                        lowContextModeEnabled = conversationControls.lowContextModeEnabled,
+                        onLowContextModeToggle = { enabled ->
+                            haptics.toggle(enabled)
+                            viewModel.updateConversationSetting(conversationControls.settingsOwnerId) {
+                                it.copy(lowContextModeEnabled = enabled)
+                            }
+                        },
+                        // The model row owns its selection tick. Repeating it here produced the
+                        // previous double buzz for one physical tap.
+                        onModelSelect = { viewModel.setActiveModel(it) },
+                        onAllMediaClick = { urls, idx -> onMediaClick(urls, idx) },
+                        onFileContentClick = { name, content -> viewModel.mediaPreview.showFile(name, content) },
                         modifier = Modifier,
                         textFieldState = textFieldState,
+                        composerState = composer,
                         focusRequester = inputFocusRequester,
+                        onInputFocusChanged = { focused ->
+                            scrollCoordinator.setComposerInputFocused(focused)
+                        },
                         isExpanded = isExpanded,
                         isExpandAnimating = isExpandAnimating,
-                        onCollapse = { haptics.action(); isExpanded = false },
-                        onExpand = { haptics.action(); isExpanded = true },
-                        showWebSearch = globalWebSearch,
-                        showShell = shellDevices.isNotEmpty() && globalShell,
-                        onPdfPagesClick = { pages, idx -> haptics.action(); onPdfPagesClick?.invoke(pages, idx) },
-                        onPdfPreviewSelect = { pages, idx -> haptics.action(); onPdfPreviewSelect?.invoke(pages, idx) },
+                        onCollapse = { isExpanded = false },
+                        onExpand = { isExpanded = true },
+                        showWebSearch = conversationControls.webSearchAvailable,
+                        showShell = shellDevices.isNotEmpty() && conversationControls.shellAvailable,
+                        onPdfPagesClick = { pages, idx -> onPdfPagesClick?.invoke(pages, idx) },
+                        onPdfPreviewSelect = { pages, idx -> onPdfPreviewSelect?.invoke(pages, idx) },
                         pdfViewerSelection = pdfViewerSelection,
                         onTogglePdfSelection = onTogglePdfSelection,
                         onInitPdfSelection = onInitPdfSelection,
                         fullScreenViewerUrls = fullScreenViewerUrls,
-                        onAdvancedClick = { showAdvancedDialog = true }
+                        compactDefaultModel = compactModel,
+                        compactDefaultPrompt = compactPrompt,
+                        compactDefaultRetainCount = compactRetainCount,
+                        contextEstimatedTokens = contextUsage.estimatedTokenCount,
+                        contextTokenBudget = contextUsage.tokenBudget,
+                        contextCompactThresholdPercent = compactThresholdPercent,
+                        contextCompactEnabled = compactEnabled,
+                        contextSystemPromptTokens = contextUsage.systemPromptTokens,
+                        contextToolTokens = contextUsage.toolTokens,
+                        canCompact = currentConversationId != null && !isLoading && !isSwitching && !isStopping,
+                        onCompactClick = {
+                            dialogState.showManualCompact()
+                        },
+                        onAdvancedClick = dialogState::showAdvanced,
+                        queuedSends = queuedSends,
+                        onRemoveQueuedSend = viewModel::removeQueuedSend, onSendQueuedNow = viewModel::sendQueuedNow,
+                        isStopping = isStopping,
                     )
-                }
             }
             }
         }
         }
-    }
-    }
 
-    showRenameDialog?.let { id ->
-        ChatRenameDialog(
-            initialName = conversationToRename,
-            onSave = { newName ->
-                viewModel.renameConversation(id, newName)
-                showRenameDialog = null
-            },
-            onDismiss = { showRenameDialog = null }
-        )
-    }
+    ChatAppDialogHost(
+        state = dialogState,
+        viewModel = viewModel,
+        haptics = haptics,
+        compactModel = compactModel,
+        selectedModel = selectedModel,
+        compactPrompt = compactPrompt,
+        compactRetainCount = compactRetainCount,
+        enabledModels = chatEnabledModels,
+        modelAliases = chatModelAliases, customProviders = customProviders,
+        modelProviderNames = modelProviderNames,
+        isCompacting = isCompacting,
+    )
 
-    showDeleteConfirmDialog?.let { id ->
-        ChatDeleteConfirmDialog(
-            onConfirm = {
-                haptics.reject()
-                viewModel.deleteConversation(id)
-                showDeleteConfirmDialog = null
-            },
-            onDismiss = { showDeleteConfirmDialog = null }
-        )
-    }
-
-    if (showPromptDialog) {
-        ChatSystemPromptDialog(viewModel = viewModel, onDismiss = { showPromptDialog = false })
-    }
-
-    if (showAdvancedDialog) {
-        ChatAdvancedSettingsDialog(viewModel = viewModel, onDismiss = { showAdvancedDialog = false })
-    }
+    ChatForkConfirmationHost(pendingForkRequest, viewModel) { pendingForkRequest = null }
 }
-

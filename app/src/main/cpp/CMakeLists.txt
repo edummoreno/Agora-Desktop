@@ -14,15 +14,44 @@ add_compile_options(
 set(LLAMA_BUILD_NUMBER 0)
 set(LLAMA_BUILD_COMMIT "unknown")
 set(LLAMA_INSTALL_VERSION "0.0.0")
+set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "")
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "")
 set(LLAMA_BUILD_SERVER OFF CACHE BOOL "")
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "")
+set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
+set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+set(GGML_BACKEND_DL ON CACHE BOOL "" FORCE)
+set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "" FORCE)
+set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)
+set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(${LLAMA_CPP_DIR} ${CMAKE_CURRENT_BINARY_DIR}/llama)
-add_subdirectory(${LLAMA_CPP_DIR}/common ${CMAKE_CURRENT_BINARY_DIR}/common)
 add_subdirectory(${LLAMA_CPP_DIR}/tools/mtmd ${CMAKE_CURRENT_BINARY_DIR}/mtmd)
+
+if(ANDROID_ABI STREQUAL "arm64-v8a")
+    set(AGORA_ANDROID_CPU_BACKENDS
+        ggml-cpu-android_armv8.0_1
+        ggml-cpu-android_armv8.2_1
+        ggml-cpu-android_armv8.2_2
+        ggml-cpu-android_armv8.6_1
+        ggml-cpu-android_armv9.0_1
+        ggml-cpu-android_armv9.2_1
+        ggml-cpu-android_armv9.2_2
+    )
+elseif(ANDROID_ABI STREQUAL "x86_64")
+    set(AGORA_ANDROID_CPU_BACKENDS ggml-cpu-x64)
+else()
+    message(FATAL_ERROR "Unsupported Android ABI: ${ANDROID_ABI}")
+endif()
+foreach(backend IN LISTS AGORA_ANDROID_CPU_BACKENDS)
+    if(NOT TARGET ${backend})
+        message(FATAL_ERROR "Required Android CPU backend target is missing: ${backend}")
+    endif()
+    set_target_properties(${backend} PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}
+    )
+endforeach()
 
 foreach(cli llama-mtmd-cli llama-mtmd-debug
          llama-llava-cli llama-gemma3-cli llama-minicpmv-cli llama-qwen2vl-cli)
@@ -45,8 +74,14 @@ endif()
 target_compile_definitions(ggml-base PRIVATE GGML_COMMIT="unknown")
 
 # Build llama JNI wrapper
-add_library(agora_llama SHARED llama_jni.cpp llama_chat_jni.cpp)
-target_link_libraries(agora_llama llama mtmd log)
+add_library(agora_llama SHARED
+    llama_jni.cpp
+    llama_chat_jni.cpp
+    llama_chat_callbacks.cpp
+    llama_chat_template.cpp
+    llama_chat_generation.cpp
+)
+target_link_libraries(agora_llama llama llama-common mtmd log)
 target_include_directories(agora_llama PRIVATE ${LLAMA_CPP_DIR}/include ${LLAMA_CPP_DIR}/tools/mtmd)
 target_link_options(agora_llama PRIVATE
     -Wl,--build-id=none -Wl,--hash-style=gnu -Wl,--icf=all -Wl,--threads=1

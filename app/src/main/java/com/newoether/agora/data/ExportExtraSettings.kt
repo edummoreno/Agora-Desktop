@@ -1,18 +1,15 @@
 package com.newoether.agora.data
 
 import com.newoether.agora.model.ThinkingLevels
+import com.newoether.agora.model.OpenAiServiceTiers
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.float
 import kotlinx.serialization.json.boolean
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 
 /**
@@ -20,80 +17,17 @@ import kotlinx.serialization.json.contentOrNull
  * All serialization is done at runtime (no compile-time serializer codegen).
  */
 object ExportExtraSettings {
-    private val json = Json { ignoreUnknownKeys = true }
-
-    suspend fun toJsonObject(sm: SettingsManager, includeApiKeys: Boolean = true): JsonObject = buildJsonObject {
-        // System prompts are exported standalone as system_prompts.json — NOT duplicated here.
-
-        val imgTransEnabled = sm.imageTranscriptionEnabledModels.first()
-        put("imageTranscriptionEnabledModels", JsonPrimitive(imgTransEnabled.joinToString(",")))
-        sm.imageTranscriptionModel.first()?.let { put("imageTranscriptionModel", JsonPrimitive(it)) }
-        put("imageTranscriptionBatchSize", JsonPrimitive(sm.imageTranscriptionBatchSize.first()))
-        put("imageTranscriptionPrompt", JsonPrimitive(sm.imageTranscriptionPrompt.first()))
-
-        put("webSearchNumResults", JsonPrimitive(sm.webSearchNumResults.first()))
-        put("searchContextWindow", JsonPrimitive(sm.searchContextWindow.first()))
-        put("searchMatchLimit", JsonPrimitive(sm.searchMatchLimit.first()))
-
-        sm.defaultTemperature.first()?.let { put("defaultTemperature", JsonPrimitive(it)) }
-        sm.defaultMaxTokens.first()?.let { put("defaultMaxTokens", JsonPrimitive(it)) }
-        sm.defaultTopP.first()?.let { put("defaultTopP", JsonPrimitive(it)) }
-        sm.defaultFrequencyPenalty.first()?.let { put("defaultFrequencyPenalty", JsonPrimitive(it)) }
-        sm.defaultPresencePenalty.first()?.let { put("defaultPresencePenalty", JsonPrimitive(it)) }
-
-        val conv = sm.conversationSettings.first()
-        if (conv.isNotEmpty()) {
-            putJsonObject("conversationSettings") {
-                conv.forEach { (convId, cs) ->
-                    putJsonObject(convId) {
-                        cs.contextWindow?.let { put("contextWindow", JsonPrimitive(it)) }
-                        cs.temperature?.let { put("temperature", JsonPrimitive(it.toDouble())) }
-                        cs.maxTokens?.let { put("maxTokens", JsonPrimitive(it)) }
-                        cs.topP?.let { put("topP", JsonPrimitive(it.toDouble())) }
-                        cs.frequencyPenalty?.let { put("frequencyPenalty", JsonPrimitive(it.toDouble())) }
-                        cs.presencePenalty?.let { put("presencePenalty", JsonPrimitive(it.toDouble())) }
-                        cs.codeExecutionEnabled?.let { put("codeExecutionEnabled", JsonPrimitive(it)) }
-                        cs.googleSearchEnabled?.let { put("googleSearchEnabled", JsonPrimitive(it)) }
-                        cs.thinkingEnabled?.let { put("thinkingEnabled", JsonPrimitive(it)) }
-                        cs.thinkingLevel?.let { put("thinkingLevel", JsonPrimitive(it)) }
-                        cs.thinkingBudgetEnabled?.let { put("thinkingBudgetEnabled", JsonPrimitive(it)) }
-                        cs.thinkingBudgetTokens?.let { put("thinkingBudgetTokens", JsonPrimitive(it)) }
-                        cs.webSearchEnabled?.let { put("webSearchEnabled", JsonPrimitive(it)) }
-                        cs.shellEnabled?.let { put("shellEnabled", JsonPrimitive(it)) }
-                    }
-                }
-            }
-        }
-
-        put("showDocumentationFab", JsonPrimitive(sm.showDocumentationFab.first()))
-        put("themeMode", JsonPrimitive(sm.themeMode.first()))
-        put("colorScheme", JsonPrimitive(sm.colorScheme.first()))
-        put("dynamicColor", JsonPrimitive(sm.dynamicColor.first()))
-        put("blurEffectsEnabled", JsonPrimitive(sm.blurEffectsEnabled.first()))
-        put("hapticsEnabled", JsonPrimitive(sm.hapticsEnabled.first()))
-        put("schemeStyle", JsonPrimitive(sm.schemeStyle.first()))
-        put("fontPreference", JsonPrimitive(sm.fontPreference.first()))
-        put("customFontPath", JsonPrimitive(sm.customFontPath.first()))
-        put("customFontName", JsonPrimitive(sm.customFontName.first()))
-        put("autoUpdateCheck", JsonPrimitive(sm.autoUpdateCheck.first()))
-        put("proxyEnabled", JsonPrimitive(sm.proxyEnabled.first()))
-        put("proxyType", JsonPrimitive(sm.proxyType.first()))
-        put("proxyHost", JsonPrimitive(sm.proxyHost.first()))
-        put("proxyPort", JsonPrimitive(sm.proxyPort.first()))
-        put("proxyUsername", JsonPrimitive(sm.proxyUsername.first()))
-        if (includeApiKeys) put("proxyPassword", JsonPrimitive(sm.proxyPassword.first()))
-        put("proxyBypass", JsonPrimitive(sm.proxyBypass.first()))
-
-        val aliases = sm.modelAliases.first()
-        if (aliases.isNotEmpty()) {
-            putJsonObject("modelAliases") {
-                aliases.forEach { (k, v) -> put(k, JsonPrimitive(v)) }
-            }
-        }
-    }
-
-    suspend fun restoreFromJsonObject(obj: JsonObject, sm: SettingsManager) {
+    suspend fun restoreLegacyFromJsonObject(
+        obj: JsonObject,
+        sm: SettingsManager,
+        replace: Boolean,
+        allowSecrets: Boolean,
+        allowedConversationIds: Set<String>,
+    ) {
         // System prompts are restored standalone from system_prompts.json — NOT duplicated here.
+        obj["imageTranscriptionEnabled"]?.jsonPrimitive?.boolean?.let {
+            sm.saveImageTranscriptionEnabled(it)
+        }
         obj["imageTranscriptionEnabledModels"]?.jsonPrimitive?.contentOrNull?.let {
             val set = it.split(",").filter { s -> s.isNotBlank() }.toSet()
             sm.saveImageTranscriptionEnabledModels(set)
@@ -110,6 +44,7 @@ object ExportExtraSettings {
         obj["defaultFrequencyPenalty"]?.jsonPrimitive?.float?.let { sm.saveDefaultFrequencyPenalty(it) }
         obj["defaultPresencePenalty"]?.jsonPrimitive?.float?.let { sm.saveDefaultPresencePenalty(it) }
         obj["conversationSettings"]?.jsonObject?.forEach { (convId, settingsJson) ->
+            if (convId !in allowedConversationIds) return@forEach
             val s = settingsJson.jsonObject
             val legacyBudgetTokens = ThinkingLevels.legacyBudgetTokens(s["thinkingLevel"]?.jsonPrimitive?.contentOrNull)
             val cs = ConversationSettings(
@@ -121,13 +56,21 @@ object ExportExtraSettings {
                 presencePenalty = s["presencePenalty"]?.jsonPrimitive?.float,
                 codeExecutionEnabled = s["codeExecutionEnabled"]?.jsonPrimitive?.boolean,
                 googleSearchEnabled = s["googleSearchEnabled"]?.jsonPrimitive?.boolean,
+                openAiWebSearchEnabled = s["openAiWebSearchEnabled"]?.jsonPrimitive?.boolean,
                 thinkingEnabled = s["thinkingEnabled"]?.jsonPrimitive?.boolean,
                 thinkingLevel = s["thinkingLevel"]?.jsonPrimitive?.contentOrNull?.let { ThinkingLevels.normalize(it) },
                 thinkingBudgetEnabled = s["thinkingBudgetEnabled"]?.jsonPrimitive?.boolean
                     ?: legacyBudgetTokens?.let { true },
                 thinkingBudgetTokens = s["thinkingBudgetTokens"]?.jsonPrimitive?.int ?: legacyBudgetTokens,
+                openAiServiceTierEnabled =
+                    s["openAiServiceTierEnabled"]?.jsonPrimitive?.boolean,
+                openAiServiceTier = s["openAiServiceTier"]
+                    ?.jsonPrimitive
+                    ?.contentOrNull
+                    ?.let(OpenAiServiceTiers::normalize),
                 webSearchEnabled = s["webSearchEnabled"]?.jsonPrimitive?.boolean,
-                shellEnabled = s["shellEnabled"]?.jsonPrimitive?.boolean
+                shellEnabled = s["shellEnabled"]?.jsonPrimitive?.boolean,
+                lowContextModeEnabled = s["lowContextModeEnabled"]?.jsonPrimitive?.boolean,
             )
             if (!cs.isAllNull()) sm.saveConversationSettings(convId, cs)
         }
@@ -137,24 +80,49 @@ object ExportExtraSettings {
         obj["proxyHost"]?.jsonPrimitive?.contentOrNull?.let { sm.saveProxyHost(it) }
         obj["proxyPort"]?.jsonPrimitive?.contentOrNull?.let { sm.saveProxyPort(it) }
         obj["proxyUsername"]?.jsonPrimitive?.contentOrNull?.let { sm.saveProxyUsername(it) }
-        obj["proxyPassword"]?.jsonPrimitive?.contentOrNull?.let { if (it.isNotEmpty()) sm.saveProxyPassword(it) }
+        if (allowSecrets) {
+            obj["proxyPassword"]?.jsonPrimitive?.contentOrNull?.let {
+                if (it.isNotEmpty()) sm.saveProxyPassword(it)
+            }
+        }
         obj["proxyBypass"]?.jsonPrimitive?.contentOrNull?.let { if (it.isNotEmpty()) sm.saveProxyBypass(it) }
         obj["themeMode"]?.jsonPrimitive?.contentOrNull?.let { sm.saveThemeMode(it) }
         obj["colorScheme"]?.jsonPrimitive?.contentOrNull?.let { sm.saveColorScheme(it) }
         obj["dynamicColor"]?.jsonPrimitive?.boolean?.let { sm.saveDynamicColor(it) }
         obj["blurEffectsEnabled"]?.jsonPrimitive?.boolean?.let { sm.saveBlurEffectsEnabled(it) }
+        obj["reduceMotion"]?.jsonPrimitive?.boolean?.let { sm.saveReduceMotion(it) }
+        obj["openAiServiceTierEnabled"]?.jsonPrimitive?.boolean?.let {
+            sm.saveOpenAiServiceTierEnabled(it)
+        }
+        obj["openAiServiceTier"]?.jsonPrimitive?.contentOrNull?.let {
+            sm.saveOpenAiServiceTier(OpenAiServiceTiers.normalize(it))
+        }
         obj["hapticsEnabled"]?.jsonPrimitive?.boolean?.let { sm.saveHapticsEnabled(it) }
+        obj["detailedTokenUsage"]?.jsonPrimitive?.boolean?.let {
+            sm.saveDetailedTokenUsage(it)
+        }
+        obj["autoExpandActiveGroup"]?.jsonPrimitive?.boolean?.let {
+            sm.saveAutoExpandActiveGroup(it)
+        }
         obj["schemeStyle"]?.jsonPrimitive?.contentOrNull?.let { sm.saveSchemeStyle(it) }
         obj["fontPreference"]?.jsonPrimitive?.contentOrNull?.let { sm.saveFontPreference(it) }
-        obj["customFontPath"]?.jsonPrimitive?.contentOrNull?.let { sm.saveCustomFontPath(it) }
-        obj["customFontName"]?.jsonPrimitive?.contentOrNull?.let { sm.saveCustomFontName(it) }
         obj["autoUpdateCheck"]?.jsonPrimitive?.boolean?.let { sm.saveAutoUpdateCheck(it) }
+        obj["automationToolsEnabled"]?.jsonPrimitive?.boolean?.let { sm.saveAutomationToolsEnabled(it) }
+        obj["exactExecutionEnabled"]?.jsonPrimitive?.boolean?.let { sm.saveExactExecutionEnabled(it) }
+        obj["automationWakeLockEnabled"]?.jsonPrimitive?.boolean
+            ?.let { sm.saveAutomationWakeLockEnabled(it) }
 
         obj["modelAliases"]?.jsonObject?.let { aliasesObj ->
             val map = aliasesObj.mapNotNull { (k, v) ->
                 v.jsonPrimitive?.contentOrNull?.let { k to it }
             }.toMap()
-            if (map.isNotEmpty()) sm.saveModelAliases(map)
+            if (map.isNotEmpty()) {
+                sm.saveModelAliases(if (replace) map else sm.modelAliases.first() + map)
+            }
+        }
+        (obj["customModels"] as? JsonArray)?.let { models ->
+            val imported = models.mapNotNull { it.jsonPrimitive.contentOrNull }.toSet()
+            sm.saveCustomModels(if (replace) imported else sm.customModels.first() + imported)
         }
     }
 }

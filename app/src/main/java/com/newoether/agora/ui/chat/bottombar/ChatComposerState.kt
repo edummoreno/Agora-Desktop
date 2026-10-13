@@ -5,287 +5,245 @@ import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.FileProvider
 import com.newoether.agora.model.SelectedAttachment
-import com.newoether.agora.ui.chat.VideoSliceDialog
-import com.newoether.agora.util.DebugLog
 import com.newoether.agora.ui.common.AgoraHaptics
 import com.newoether.agora.ui.common.LocalAgoraHaptics
+import com.newoether.agora.util.AttachmentFiles
+import com.newoether.agora.util.DebugLog
 import com.newoether.agora.util.FileValidator
-import com.newoether.agora.util.PdfPageRenderer
+import com.newoether.agora.viewmodel.ConversationComposerController
+import com.newoether.agora.viewmodel.ConversationComposerSubmissionController
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * State holder for the chat composer's attachment subsystem (images / videos / PDFs /
- * generic files): the picked-attachment list, per-attachment processing progress, and
- * the PDF page-select + video-slice dialog state, plus the logic for picking, frame
- * extraction, page rendering, and removal.
- *
- * Hoisted out of the `ChatBottomBar` composable body (Phase E6) so the composable holds
- * UI and this holder owns attachment state/behaviour — the Compose "separate state from
- * UI" best practice. Obtain via [rememberChatComposerState]; the composable reads/writes
- * `composer.xxx` and wires the launchers/dialogs to these methods.
- */
+data class CameraCaptureTarget(
+    val uri: Uri,
+    val privatePath: String,
+)
+
+/** UI-only coordination for attachment dialogs, camera capture, and rejection feedback. */
 class ChatComposerState(
     private val context: Context,
     private val haptics: AgoraHaptics,
     private val scope: CoroutineScope,
+    private val sandboxEnabled: () -> Boolean = { false },
+    private val isSandboxFlavor: Boolean = false,
 ) {
-    var selectedAttachments by mutableStateOf<List<SelectedAttachment>>(emptyList())
-    var processingStates by mutableStateOf<Map<String, Float>>(emptyMap())
-    var pendingSend by mutableStateOf(false)
-
-    // PDF page selection dialog state
     var showPdfPageDialog by mutableStateOf(false)
-    var pendingPdfUri by mutableStateOf<String?>(null)
-    var pendingPdfPages by mutableIntStateOf(0)
-    var pendingPdfFileName by mutableStateOf<String?>(null)
-    var pendingPdfMimeType by mutableStateOf<String?>(null)
-    var pendingPdfRenderedPaths by mutableStateOf<List<String>>(emptyList())
-    var pendingPdfIsRendering by mutableStateOf(false)
-    var pendingPdfRenderProgress by mutableStateOf(0 to 0)
     var pdfDialogHiddenForPreview by mutableStateOf(false)
-    // Background render job for the page-select dialog, so a dismiss can cancel it and
-    // let renderAllPages clean up its partially-written page files.
-    var pdfRenderJob by mutableStateOf<Job?>(null)
-    // In-flight video frame-extraction jobs, keyed by video uri, so removing a video while
-    // it is still extracting can cancel the job (which deletes its partial frame files).
-    val videoExtractionJobs = mutableMapOf<String, Job>()
+    var pendingPdfOwnerId by mutableStateOf<String?>(null)
+    var pendingPdfAttachmentId by mutableStateOf<String?>(null)
 
-    // Video slicing dialog state
     var showVideoSliceDialog by mutableStateOf(false)
-    var pendingVideoUri by mutableStateOf<String?>(null)
-    var pendingVideoDurationMs by mutableLongStateOf(0L)
-    var pendingVideoQueue by mutableStateOf<List<String>>(emptyList())
+    var pendingVideoOwnerId by mutableStateOf<String?>(null)
+    var pendingVideoAttachmentId by mutableStateOf<String?>(null)
 
-    // File validation rejection dialog
-    var rejectedMessage by mutableStateOf<String?>(null)
+    private var rejectionMessageState by mutableStateOf<String?>(null)
+    private var rejectionTitleState by mutableIntStateOf(
+        com.newoether.agora.R.string.file_unsupported_title,
+    )
+    var rejectedMessage: String?
+        get() = rejectionMessageState
+        set(value) {
+            rejectionMessageState = value
+            rejectionTitleState = com.newoether.agora.R.string.file_unsupported_title
+        }
+    val rejectedTitleRes: Int
+        get() = rejectionTitleState
 
-    /** Clear the attachment list after a successful send. The extracted-frame / rendered-page
-     *  files are now owned by the stored message (via images field in MessageEntity) — they
-     *  must NOT be deleted here; message deletion handles that. */
-    fun clearAttachments() {
-        selectedAttachments = emptyList()
+    fun resetPendingPdfState() {
+        showPdfPageDialog = false
+        pdfDialogHiddenForPreview = false
+        pendingPdfOwnerId = null
+        pendingPdfAttachmentId = null
     }
 
-    /** Remove the attachment at [index], cancelling any in-flight extraction and deleting its
-     *  pre-extracted frame / rendered-page files. */
-    fun removeAttachmentAt(index: Int) {
-        haptics.selection()
-        val removed = selectedAttachments.getOrNull(index)
-        // Cancel in-flight video extraction + delete partial frames
-        if (removed != null && videoExtractionJobs.containsKey(removed.uri)) {
-            videoExtractionJobs[removed.uri]?.cancel()
-            videoExtractionJobs.remove(removed.uri)
-        }
-        // Clean up pre-extracted video frame files
-        if (removed?.processedFrames != null) {
-            for (path in removed.processedFrames) {
-                try { java.io.File(path).delete() } catch (_: Exception) {}
-            }
-        }
-        // Clean up PDF page preview files
-        if (removed?.preRenderedPaths != null) {
-            for (path in removed.preRenderedPaths) {
-                try { java.io.File(path).delete() } catch (_: Exception) {}
-            }
-        }
-        val uriStr = removed?.uri
-        selectedAttachments = selectedAttachments.toMutableList().also { it.removeAt(index) }
-        if (uriStr != null) processingStates = processingStates - uriStr
+    fun resetPendingVideoState() {
+        showVideoSliceDialog = false
+        pendingVideoOwnerId = null
+        pendingVideoAttachmentId = null
     }
 
-    // Helper: process next video in queue, showing slice dialog
-    fun processNextVideo() {
-        if (pendingVideoQueue.isNotEmpty()) {
-            val uri = pendingVideoQueue.first()
-            pendingVideoQueue = pendingVideoQueue.drop(1).toMutableList()
-            val durationMs = try {
-                val retriever = android.media.MediaMetadataRetriever()
-                try {
-                retriever.setDataSource(context, android.net.Uri.parse(uri))
-                retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                } finally { retriever.release() }
-            } catch (_: Exception) { 0L }
-            pendingVideoUri = uri
-            pendingVideoDurationMs = durationMs
-            showVideoSliceDialog = true
-        }
-    }
-
-    // Start frame extraction for a video, return list of frame paths
-    suspend fun extractVideoFrames(videoUri: String, frameCount: Int, intervalMs: Long): List<String> {
-        return withContext(Dispatchers.IO) {
-            val paths = mutableListOf<String>()
+    /**
+     * Creates the camera output inside Agora's private files directory and exposes only that path
+     * through FileProvider. The system camera writes the full-resolution image directly.
+     */
+    suspend fun createCameraCaptureTarget(): CameraCaptureTarget? =
+        withContext(Dispatchers.IO) {
+            var target: java.io.File? = null
             try {
-                val retriever = android.media.MediaMetadataRetriever()
-                try {
-                retriever.setDataSource(context, android.net.Uri.parse(videoUri))
-                var timeUs = 0L
-                val intervalUs = intervalMs * 1000L
-                for (i in 0 until frameCount) {
-                    ensureActive()
-                    val bitmap = retriever.getFrameAtTime(
-                        timeUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST
-                    )
-                    if (bitmap != null) {
-                        val file = java.io.File(context.filesDir, "vid_${java.util.UUID.randomUUID()}_$i.jpg")
-                        file.outputStream().use { out ->
-                            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 80, out)
-                        }
-                        bitmap.recycle()
-                        paths.add(file.absolutePath)
-                    }
-                    timeUs += intervalUs
-                    processingStates = processingStates + (videoUri to (i + 1).toFloat() / frameCount)
+                val directory = java.io.File(context.filesDir, "images")
+                check(directory.exists() || directory.mkdirs()) {
+                    "Unable to create private image directory"
                 }
-                } finally { retriever.release() }
-            } catch (c: CancellationException) {
-                // Removed mid-extraction: drop the partial frame files instead of orphaning them.
-                paths.forEach { runCatching { java.io.File(it).delete() } }
-                throw c
-            } catch (e: Exception) { DebugLog.e("ChatComposer", "Video frame extraction failed", e) }
-            processingStates = processingStates - videoUri
-            paths
-        }
-    }
-
-    /** Handle images picked from the photo picker. */
-    fun onPickImages(uris: List<Uri>) {
-        if (uris.isNotEmpty()) haptics.selection()
-        selectedAttachments = selectedAttachments + uris.map {
-            SelectedAttachment(
-                uri = it.toString(), type = "image",
-                mimeType = try { context.contentResolver.getType(it) } catch (_: Exception) { null }
-            )
-        }
-    }
-
-    /** Handle videos picked from the video picker; queues them and kicks off the slice dialog. */
-    fun onPickVideos(uris: List<Uri>) {
-        if (uris.isNotEmpty()) haptics.selection()
-        val urisToQueue = uris.map { it.toString() }
-        pendingVideoQueue = pendingVideoQueue + urisToQueue
-        if (!showVideoSliceDialog) processNextVideo()
-    }
-
-    /** Handle generic files picked from the document picker (validates, queues first PDF for
-     *  page rendering, adds the rest as attachments). */
-    fun onPickFiles(uris: List<Uri>, onInitPdfSelection: ((Set<Int>) -> Unit)?) {
-        val validAttachments = mutableListOf<SelectedAttachment>()
-        val rejectedMessages = mutableListOf<String>()
-        for (uri in uris) {
-            val validation = FileValidator.validate(context, uri)
-            if (!validation.valid) {
-                rejectedMessages.add(FileValidator.errorMessage(context, validation.error!!, validation.mimeType))
-                continue
-            }
-            val mimeType = validation.mimeType
-            val type = when {
-                mimeType == "application/pdf" -> "pdf"
-                mimeType != null -> "file"
-                else -> "file"
-            }
-            val fileName = try {
-                val cursor = context.contentResolver.query(
-                    uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null
+                target = java.io.File(directory, "camera_${UUID.randomUUID()}.jpg")
+                check(target.createNewFile()) { "Unable to create camera target" }
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.fileprovider",
+                    target,
                 )
-                cursor?.use {
-                    if (it.moveToFirst()) {
-                        val idx = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                        if (idx >= 0) it.getString(idx) else null
-                    } else null
-                }
-            } catch (_: Exception) { null }
-            if (type == "pdf" && !showPdfPageDialog) {
-                // Queue first PDF — render all pages in background
-                val pageCount = PdfPageRenderer.getPageCount(context, uri)
-                if (pageCount > 0) {
-                    pendingPdfUri = uri.toString()
-                    pendingPdfPages = pageCount
-                    pendingPdfFileName = fileName
-                    pendingPdfMimeType = mimeType
-                    pendingPdfRenderedPaths = emptyList()
-                    pendingPdfIsRendering = true
-                    pendingPdfRenderProgress = 0 to pageCount
-                    showPdfPageDialog = true
-                    // Initialize selection to first 5 pages
-                    onInitPdfSelection?.invoke((0 until minOf(pageCount, 5)).toSet())
-                    pdfRenderJob = scope.launch(Dispatchers.IO) {
-                        val paths = PdfPageRenderer.renderAllPages(
-                            context, uri, maxPages = pageCount,
-                            onProgress = { cur, total -> pendingPdfRenderProgress = cur to total }
-                        )
-                        pendingPdfRenderedPaths = paths
-                        pendingPdfIsRendering = false
+                CameraCaptureTarget(uri = uri, privatePath = target.absolutePath)
+            } catch (error: Exception) {
+                target?.let { runCatching { it.delete() } }
+                DebugLog.e("ChatComposer", "Unable to prepare camera capture", error)
+                null
+            }
+        }
+
+    /** Commits a successful private camera target through the canonical attachment owner. */
+    internal fun completeCameraCapture(
+        ownerId: String,
+        controller: ConversationComposerController,
+        submissions: ConversationComposerSubmissionController,
+        privatePath: String,
+        captured: Boolean,
+    ) {
+        scope.launch {
+            val (attachment, errorRes) = withContext(Dispatchers.IO) {
+                val file = privateCameraFile(privatePath)
+                when {
+                    file == null || !captured || !file.isFile || file.length() <= 0L -> {
+                        file?.let { runCatching { it.delete() } }
+                        null to null
                     }
-                    continue
+                    file.length() > AttachmentFiles.MAX_ATTACHMENT_BYTES -> {
+                        runCatching { file.delete() }
+                        null to com.newoether.agora.R.string.file_too_large
+                    }
+                    else -> SelectedAttachment(
+                        uri = FileProvider.getUriForFile(
+                            context,
+                            "${context.packageName}.fileprovider",
+                            file,
+                        ).toString(),
+                        type = "image",
+                        fileName = file.name,
+                        mimeType = "image/jpeg",
+                        fileSize = file.length(),
+                        localPath = file.absolutePath,
+                    ) to null
                 }
             }
-            validAttachments.add(SelectedAttachment(
-                uri = uri.toString(), type = type,
-                mimeType = mimeType, fileName = fileName
-            ))
+            if (attachment != null && !submissions.snapshot(ownerId).isFrozen) {
+                runCatching {
+                    controller.load(ownerId)
+                    try {
+                        if (submissions.snapshot(ownerId).isFrozen) {
+                            false
+                        } else {
+                            controller.importAttachment(ownerId, attachment)
+                        }
+                    } finally {
+                        withContext(NonCancellable) { controller.release(ownerId) }
+                    }
+                }
+                    .onSuccess { imported ->
+                        if (imported) {
+                            haptics.selection()
+                        } else {
+                            withContext(NonCancellable + Dispatchers.IO) {
+                                attachment.localPath?.let { path ->
+                                    runCatching { java.io.File(path).delete() }
+                                }
+                            }
+                        }
+                    }
+                    .onFailure { failure ->
+                        withContext(NonCancellable + Dispatchers.IO) {
+                            attachment.localPath?.let { path ->
+                                runCatching { java.io.File(path).delete() }
+                            }
+                        }
+                        if (failure is CancellationException) throw failure
+                        rejectedMessage = context.getString(
+                            com.newoether.agora.R.string.attachment_copy_failed_image,
+                        )
+                    }
+            } else if (attachment != null) {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    attachment.localPath?.let { path -> runCatching { java.io.File(path).delete() } }
+                }
+            } else if (errorRes != null) {
+                rejectedMessage = context.getString(errorRes)
+            }
         }
-        if (rejectedMessages.isNotEmpty()) {
-            haptics.reject()
-            rejectedMessage = rejectedMessages.joinToString("\n")
-        }
-        if (validAttachments.isNotEmpty()) haptics.selection()
-        selectedAttachments = selectedAttachments + validAttachments
     }
 
-    /** Add a sliced video as an attachment and start background frame extraction. */
-    fun addSlicedVideo(vidUri: String, frameCount: Int, intervalMs: Long) {
-        val fileName = try {
-            val cursor = context.contentResolver.query(
-                Uri.parse(vidUri), arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null
-            )
-            cursor?.use {
-                if (it.moveToFirst()) {
-                    val idx = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                    if (idx >= 0) it.getString(idx) else null
-                } else null
-            }
-        } catch (_: Exception) { null }
-        val attachment = SelectedAttachment(
-            uri = vidUri, type = "video",
-            frameCount = frameCount,
-            sliceIntervalMs = intervalMs,
-            fileName = fileName,
-            mimeType = "video/*"
-        )
-        selectedAttachments = selectedAttachments + attachment
-        processingStates = processingStates + (vidUri to 0f)
-
-        // Start frame extraction and store result paths; track job so an X-delete while
-        // extracting can cancel it (extractVideoFrames cleans up partial files on cancel).
-        val job = scope.launch(Dispatchers.IO) {
-            val framePaths = extractVideoFrames(vidUri, frameCount, intervalMs)
-            selectedAttachments = selectedAttachments.map { a ->
-                if (a.uri == vidUri) a.copy(processedFrames = framePaths) else a
-            }
-            videoExtractionJobs.remove(vidUri)
+    private fun privateCameraFile(path: String): java.io.File? = runCatching {
+        val directory = java.io.File(context.filesDir, "images").canonicalFile
+        java.io.File(path).canonicalFile.takeIf { file ->
+            file.parentFile == directory && file.name.startsWith("camera_")
         }
-        videoExtractionJobs[vidUri] = job
+    }.getOrNull()
+
+    fun acceptsLocalSandboxAttachments(): Boolean = isSandboxFlavor && sandboxEnabled()
+
+    fun reportUnsupportedFiles(mimeTypes: List<String?>) {
+        if (mimeTypes.isEmpty()) return
+        mimeTypes.distinct().forEach { appendRejection(unsupportedFileMessage(it)) }
+    }
+
+    fun reportCameraPreparationFailure() {
+        rejectionTitleState = com.newoether.agora.R.string.camera
+        rejectionMessageState = context.getString(
+            com.newoether.agora.R.string.attachment_copy_failed_image,
+        )
+    }
+
+    private fun unsupportedFileMessage(mimeType: String?): String {
+        val error = if (mimeType == null) {
+            FileValidator.Error.UNKNOWN_TYPE
+        } else {
+            FileValidator.Error.UNSUPPORTED_TYPE
+        }
+        val original = FileValidator.errorMessage(context, error, mimeType)
+        return if (isSandboxFlavor) {
+            "$original\n\n${context.getString(com.newoether.agora.R.string.file_sandbox_required)}"
+        } else {
+            original
+        }
+    }
+
+    private fun appendRejection(message: String) {
+        val existing = rejectionMessageState
+        rejectionTitleState = com.newoether.agora.R.string.file_unsupported_title
+        rejectionMessageState = when {
+            existing.isNullOrBlank() -> message
+            message in existing.lines() -> existing
+            else -> "$existing\n$message"
+        }
     }
 }
 
 @Composable
-fun rememberChatComposerState(): ChatComposerState {
+fun rememberChatComposerState(
+    sandboxEnabled: Boolean = false,
+    isSandboxFlavor: Boolean = false,
+): ChatComposerState {
     val context = LocalContext.current
     val haptics = LocalAgoraHaptics.current
     val scope = rememberCoroutineScope()
-    return remember(context, haptics, scope) { ChatComposerState(context, haptics, scope) }
+    val latestSandboxEnabled = rememberUpdatedState(sandboxEnabled)
+    return remember(context, haptics, scope, isSandboxFlavor) {
+        ChatComposerState(
+            context = context,
+            haptics = haptics,
+            scope = scope,
+            sandboxEnabled = { latestSandboxEnabled.value },
+            isSandboxFlavor = isSandboxFlavor,
+        )
+    }
 }

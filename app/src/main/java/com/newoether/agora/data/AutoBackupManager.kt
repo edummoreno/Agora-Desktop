@@ -1,6 +1,7 @@
 package com.newoether.agora.data
 
 import android.app.NotificationManager
+import android.os.Build
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -8,7 +9,6 @@ import android.net.Uri
 import android.os.Environment
 import com.newoether.agora.MainActivity
 import com.newoether.agora.R
-import com.newoether.agora.data.local.ChatDao
 import com.newoether.agora.util.DebugLog
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
@@ -30,8 +30,8 @@ enum class BackupResult { NOT_DUE, SUCCESS, FAILED }
 class AutoBackupManager(
     private val context: Context,
     private val settingsManager: SettingsManager,
-    private val chatDao: ChatDao,
-    private val memoryManager: MemoryManager
+    private val memoryManager: MemoryManager,
+    private val skillManager: SkillManager,
 ) {
     companion object {
         /** Cross-instance Mutex — ensures Worker and ChatViewModel instances don't race. */
@@ -66,10 +66,15 @@ class AutoBackupManager(
             val freshLastBackup = settingsManager.lastBackupTimestamp.safeRead(0L)
             if (now - freshLastBackup < periodMs) return BackupResult.NOT_DUE
 
-            val file = performBackup()
-            if (file != null) {
+            val backup = performBackup()
+            if (backup != null) {
+                val missingResourceCount = backup.second.missingResourceCount
                 runCatching { settingsManager.saveLastBackupTimestamp(now) }
+                    .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
                 cleanupOldBackups()
+                if (missingResourceCount > 0) {
+                    sendMissingResourceNotification(missingResourceCount)
+                }
                 return BackupResult.SUCCESS
             }
             return BackupResult.FAILED
@@ -79,13 +84,26 @@ class AutoBackupManager(
         return BackupResult.NOT_DUE
     }
 
+    /**
+     * Read-only mirror of [checkAndBackup]'s fast-path due check. Lets the worker stay silent
+     * (no foreground promotion, no notification) when the hourly tick fires but nothing is due.
+     */
+    suspend fun isBackupDue(): Boolean {
+        if (!settingsManager.autoBackupEnabled.safeRead(true)) return false
+        val lastBackup = settingsManager.lastBackupTimestamp.safeRead(0L)
+        val periodHours = settingsManager.autoBackupPeriodHours.safeRead(24)
+        return System.currentTimeMillis() - lastBackup >= periodHours.toLong() * 3600_000L
+    }
+
     fun destroy() {
         scope.cancel()
     }
 
     // ── Private ───────────────────────────────────────────────
 
-    private suspend fun performBackup(): File? = withContext(Dispatchers.IO) {
+    private suspend fun performBackup(): Pair<File, DataExporter.ExportResult>? =
+        withContext(Dispatchers.IO) {
+        var cleanupTarget: File? = null
         try {
             val dir = resolveBackupDir() ?: return@withContext null
             if (!dir.exists() && !dir.mkdirs()) return@withContext null
@@ -94,6 +112,12 @@ class AutoBackupManager(
             val filename = "Agora_backup_${sdf.format(Date())}.agora"
             val file = File(dir, filename)
             val tmpFile = File(dir, "$filename.tmp")
+            cleanupTarget = tmpFile
+            val baselineFile = dir.listFiles { candidate ->
+                candidate.isFile &&
+                    candidate.name.startsWith("Agora_backup_") &&
+                    candidate.name.endsWith(".agora")
+            }?.maxByOrNull(File::lastModified)
 
             val categoryKeys = settingsManager.autoBackupCategories.safeRead("conversations,memories,system_prompts,settings")
                 .split(",").map { it.trim() }.filter { it.isNotBlank() }.toSet()
@@ -108,26 +132,36 @@ class AutoBackupManager(
             // shows an explicit warning when that box is checked).
             val includeApiKeys = DataExporter.ExportCategory.API_KEYS in categories
 
-            val exporter = DataExporter(context, chatDao, settingsManager, memoryManager)
-            exporter.export(
+            val exporter = DataExporter(
+                context,
+                settingsManager,
+                memoryManager,
+                skillManager,
+            )
+            val exportResult = exporter.export(
                 uri = Uri.fromFile(tmpFile),
                 categories = categories,
                 includeApiKeys = includeApiKeys,
+                baselineFile = baselineFile,
                 onProgress = {}
             )
 
             // Atomic: rename temp to final
             if (tmpFile.renameTo(file)) {
-                DebugLog.d("AutoBackup", "Backup created: ${file.absolutePath}")
-                file
+                DebugLog.d("AutoBackup", "Backup created")
+                file to exportResult
             } else {
                 // renameTo may fail across filesystems — try direct write as fallback
                 tmpFile.delete()
                 sendFailureNotification("Failed to finalize backup file")
                 null
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            cleanupTarget?.let { runCatching { it.delete() } }
+            throw e
         } catch (e: Exception) {
             DebugLog.e("AutoBackup", "Backup failed", e)
+            cleanupTarget?.let { runCatching { it.delete() } }
             sendFailureNotification(e.localizedMessage ?: "Auto backup failed")
             null
         }
@@ -146,6 +180,7 @@ class AutoBackupManager(
         val fallback = defaultBackupDir()
         if (fallback.exists() || fallback.mkdirs()) {
             runCatching { settingsManager.saveAutoBackupDirectory(fallback.absolutePath) }
+                .onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
             return fallback
         }
 
@@ -190,15 +225,31 @@ class AutoBackupManager(
     }
 
     private fun sendFailureNotification(message: String) {
+        sendNotification(
+            title = "Auto backup failed",
+            message = message,
+        )
+    }
+
+    private fun sendMissingResourceNotification(count: Int) {
+        sendNotification(
+            title = context.getString(R.string.auto_backup_title),
+            message = context.getString(R.string.auto_backup_missing_resources, count),
+        )
+    }
+
+    private fun sendNotification(title: String, message: String) {
         try {
             val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-            val channel = android.app.NotificationChannel(
-                CHANNEL_ID,
-                "Auto Backup",
-                NotificationManager.IMPORTANCE_DEFAULT
-            ).apply { description = "Auto backup status" }
-            nm.createNotificationChannel(channel)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = android.app.NotificationChannel(
+                    CHANNEL_ID,
+                    "Auto Backup",
+                    NotificationManager.IMPORTANCE_DEFAULT
+                ).apply { description = "Auto backup status" }
+                nm.createNotificationChannel(channel)
+            }
 
             val intent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -212,7 +263,7 @@ class AutoBackupManager(
                 NOTIFICATION_ID,
                 NotificationCompat.Builder(context, CHANNEL_ID)
                     .setSmallIcon(R.drawable.ic_notification)
-                    .setContentTitle("Auto backup failed")
+                    .setContentTitle(title)
                     .setContentText(message)
                     .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                     .setAutoCancel(true)
@@ -228,5 +279,7 @@ class AutoBackupManager(
 
     /** Read a Flow's first value with error tolerance. */
     private suspend fun <T> Flow<T>.safeRead(default: T): T =
-        try { first() } catch (_: Exception) { default }
+        try { first() } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) { default }
 }

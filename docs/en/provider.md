@@ -1,142 +1,35 @@
 # API Providers
 
-Agora connects directly to AI providers — no middleman, no subscription, no telemetry. You bring your own API keys, and everything runs from your device.
+Open **Settings → Providers**, then select a provider to edit its endpoint, protocol, credentials, or local models.
 
 ## Built-in Providers
 
-| Provider | Base URL | Models | Notes |
-|----------|----------|--------|-------|
-| **Google** | `https://generativelanguage.googleapis.com/v1beta` | Gemini series | Free tier available via Google AI Studio |
-| **OpenAI** | `https://api.openai.com/v1` | GPT-4, GPT-4o, o-series | Reasoning models supported |
-| **Anthropic** | `https://api.anthropic.com/v1` | Claude series | Extended thinking supported |
-| **DeepSeek** | `https://api.deepseek.com/v1` | DeepSeek-V3, DeepSeek-R1 | Reasoning models supported |
-| **Qwen** | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | Qwen series | Via Alibaba DashScope |
-| **Ollama** | `http://localhost:11434/v1` | Any pulled model | Self-hosted, no API key needed |
-| **OpenRouter** | `https://openrouter.ai/api/v1` | Multi-provider | Access many models through one API |
-| **Local** | N/A | GGUF models | On-device via llama.cpp, fully offline |
+Agora includes configurations for OpenAI, Anthropic, Google Gemini, DeepSeek, DashScope/Qwen, OpenRouter, OpenCode Go, Groq, Ollama, and Local models. Provider catalogs and endpoint behavior can change independently of the app.
 
-## Switching Providers
-
-Tap the provider selector in Settings to switch between providers. Each provider maintains its own:
-
-- API keys
-- Base URL (editable for proxies/self-hosted)
-- Model list
-
----
-
-## API Keys
-
-### Multiple Keys per Provider
-
-Each provider supports multiple named API keys. This enables:
-
-- **Rotation** — switch between keys for different usage tiers
-- **Organization** — separate work and personal usage
-- **Fallback** — keep a backup key ready
-
-### Managing Keys
-
-1. Go to **Settings → Provider**
-2. Select a provider
-3. Under **API Keys**, tap **Add New Key**
-4. Enter a **name** (e.g., "Work", "Personal", "Team Shared") and the **key value**
-5. Tap **Add**
-
-Tap the radio button to set the active key. Long-press a key to **Edit** or **Delete**.
-
-### Key Safety
-
-!!! warning
-    API keys are stored locally in an encrypted Room database. They are never sent to Agora servers (there are none). However, they are exported in plain text if you include them in a `.agora` export file.
-
----
+For a remote provider, the Base URL field shows its effective built-in default when no override is stored. Providers without a built-in endpoint may show a placeholder instead. A blank override resolves back to the provider default where one exists. Base URL edits save automatically after a 500 ms pause; there is no separate Save action.
 
 ## Custom Providers
 
-Add any OpenAI-compatible API endpoint:
+A custom endpoint can use an OpenAI-compatible, Google, or Anthropic protocol. Configure its Base URL and protocol to match the server. Model synchronization follows the selected protocol, and models can still be added manually when discovery is unavailable.
 
-1. Go to **Settings → Provider**
-2. Tap **+ Add Custom Provider** at the bottom of the provider list
-3. Enter:
-    - **Provider Name** — any display name
-    - **Base URL** — the API endpoint
-4. Tap **Add**
+**Responses API** switches from Chat Completions to the provider's `/responses` endpoint. It is available for the built-in OpenAI provider and custom providers using the OpenAI-compatible protocol.
 
-Agora fetches the model list from `{base_url}/v1/models`. Once added, custom providers work exactly like built-in ones: add API keys, sync models, and chat.
+## API Keys
 
-### Use Cases
+A provider can store multiple named API keys. Select the radio button beside one key to make it active for that provider. Keys can be added, edited, or deleted independently.
 
-- **Self-hosted** — connect to vLLM, LocalAI, text-generation-webui, or other OpenAI-compatible servers
-- **Proxies** — route through a corporate proxy or API gateway
-- **Alternative endpoints** — use Azure OpenAI, Cloudflare AI Gateway, or other compatible services
+API keys are stored in preferences rather than the Room conversation database. `SecretCrypto` normally applies an Android Keystore AES-256-GCM envelope, but legacy plaintext remains readable and encryption failure falls back to plaintext rather than losing the value. Requests send the active credential only to the configured destination when needed. Because the Base URL determines the server contacted, verify custom endpoints carefully.
 
-### Rename or Delete
+## Anthropic Cache
 
-Long-press a custom provider to **Rename** or **Delete**. Deleting removes the provider and all its keys.
+For the built-in Anthropic provider and custom providers using the Anthropic protocol, **Advanced** appears below API Keys. **Cache** is on by default. While enabled, **Cache Duration** offers **5m** and **1h**, with **1h** selected by default. Each provider saves changes immediately.
 
-!!! warning
-    Built-in providers cannot be renamed or deleted.
+Turning Cache off omits Agora's top-level `cache_control` request marker and retains the selected duration for later. It does not disable caching added by a relay. Match the duration to your relay policy, or turn off Agora's marker when the relay manages caching. Changing a custom provider to another protocol hides these controls without erasing their values.
 
----
+## Local Models
 
-## Base URL Override
+The **Local** provider imports chat models from GGUF files. Each entry has a model ID and alias, context size, temperature, Top P, and maximum output-token setting. An optional vision projector (`.mmproj`) adds vision support and is shown on the model row.
 
-Every provider (including built-in) has an editable **Base URL**. This is useful for:
+Use **Model Idle Retention** under Advanced to choose how long an unused local model stays loaded before Agora unloads it. Deleting a local entry removes the app-owned model and projector copies. When an edit replaces or removes a projector, Agora removes the old projector copy.
 
-- **Proxies**: Route through `https://my-proxy.example.com/v1`
-- **Self-hosted**: Point to your own instance
-- **Region routing**: Use region-specific endpoints
-
----
-
-## Syncing Models
-
-After adding API keys, sync the model list:
-
-1. Go to **Settings → Models**
-2. Tap **Sync from All Providers**
-3. Agora fetches available models from every configured provider
-
-A snackbar shows sync progress and results. You can then enable/disable individual models and set a default.
-
----
-
-## Provider-Specific Notes
-
-### Google Gemini
-
-- API keys from [Google AI Studio](https://aistudio.google.com/apikey)
-- Free tier available with rate limits
-- Supports code execution and search grounding (built-in tools)
-
-### OpenAI
-
-- API keys from [Platform](https://platform.openai.com/api-keys)
-- Reasoning models (o1, o3) require specific API access
-- Streaming, tools, and vision all supported
-
-### Anthropic
-
-- API keys from [Console](https://console.anthropic.com/)
-- Extended thinking with configurable token budgets
-- Tool use with parallel calls supported
-
-### Ollama
-
-- No API key required (local network)
-- Base URL typically `http://<host>:11434/v1`
-- Model list fetched from Ollama's API
-- See [FAQ](faq.md) for Ollama-specific troubleshooting
-
-### OpenRouter
-
-- Single API key for 200+ models
-- Pay-per-token pricing varies by model
-- Good for trying different models without individual provider accounts
-
-### Local (llama.cpp)
-
-- No network required
-- GGUF model files stored on-device
-- See [Local Models](local-model.md) for setup
+Optional exports can include provider secrets, but those secrets are unencrypted inside the archive. See [Models](models.md), [Local Models](local-model.md), [Import & Export](import-export.md), and [Privacy & Security](privacy.md).

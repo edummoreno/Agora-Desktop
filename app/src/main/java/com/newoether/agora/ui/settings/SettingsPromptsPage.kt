@@ -8,7 +8,6 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -33,9 +32,16 @@ import com.newoether.agora.R
 import com.newoether.agora.data.DefaultSystemPrompt
 import com.newoether.agora.data.PromptTemplateItem
 import com.newoether.agora.data.SystemPromptEntry
+import com.newoether.agora.ui.motion.LocalAgoraMotionPolicy
+import com.newoether.agora.ui.motion.MotionAwareModalBottomSheet as ModalBottomSheet
 import com.newoether.agora.viewmodel.ChatViewModel
 import kotlinx.coroutines.launch
 import java.util.UUID
+import com.newoether.agora.ui.components.AgoraDropdownMenu
+import com.newoether.agora.ui.components.AgoraDropdownMenuItem
+import com.newoether.agora.ui.components.sheetOptionClickable
+
+private const val DUPLICATE_TITLE_TOKEN = "__AGORA_PROMPT_TITLE__"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -46,17 +52,38 @@ fun SettingsPromptsPage(viewModel: ChatViewModel, onBack: () -> Unit) {
     var editingEntry by remember { mutableStateOf<SystemPromptEntry?>(null) }
     var showDeletePromptConfirm by remember { mutableStateOf<SystemPromptEntry?>(null) }
     var showTemplatePicker by remember { mutableStateOf(false) }
+    var templateActionInFlight by remember { mutableStateOf(false) }
+    var templateActionGeneration by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val motionPolicy = LocalAgoraMotionPolicy.current
     val templateSheetState = rememberModalBottomSheetState()
+    val duplicateTitleTemplate = stringResource(
+        R.string.prompts_duplicate_title,
+        DUPLICATE_TITLE_TOKEN,
+    )
 
-    // Animate the sheet closed first, then flip to the editor page — avoids the sheet popping away
-    // at the same instant the page transition starts.
+    // Start the destination transition and sheet dismissal from the same tap. Keep the sheet
+    // composed until its hide animation completes so neither surface pops out mid-transition.
     val pickTemplate: (SystemPromptEntry) -> Unit = { entry ->
-        scope.launch { templateSheetState.hide() }.invokeOnCompletion {
-            if (!templateSheetState.isVisible) {
+        if (!templateActionInFlight) {
+            templateActionInFlight = true
+            val actionGeneration = ++templateActionGeneration
+            editingEntry = entry
+            if (motionPolicy.allowSpatialTransitions) {
+                scope.launch {
+                    try {
+                        templateSheetState.hide()
+                    } finally {
+                        if (templateActionGeneration == actionGeneration) {
+                            showTemplatePicker = false
+                            templateActionInFlight = false
+                        }
+                    }
+                }
+            } else {
                 showTemplatePicker = false
-                editingEntry = entry
+                templateActionInFlight = false
             }
         }
     }
@@ -70,19 +97,32 @@ fun SettingsPromptsPage(viewModel: ChatViewModel, onBack: () -> Unit) {
         forward = editingEntry != null
     ) { currentEntry ->
         if (currentEntry != null) {
-            SystemPromptEditorPage(
-                entry = currentEntry,
-                onSave = { title, systemItems, userPrependItems, userPostpendItems ->
-                    if (systemPrompts.any { it.id == currentEntry.id }) {
-                        viewModel.settings.updateSystemPrompt(currentEntry.id, title, systemItems, userPrependItems, userPostpendItems)
-                    } else {
-                        viewModel.settings.addSystemPrompt(title, systemItems, userPrependItems, userPostpendItems)
-                    }
-                    editingEntry = null
-                },
-                onBack = { editingEntry = null },
-                showDocFab = showDocFab
-            )
+            SettingsSecondaryPane {
+                SystemPromptEditorPage(
+                    entry = currentEntry,
+                    onSave = { title, systemItems, userItems, assistantItems ->
+                        if (systemPrompts.any { it.id == currentEntry.id }) {
+                            viewModel.settings.updateSystemPrompt(
+                                currentEntry.id,
+                                title,
+                                systemItems,
+                                userItems,
+                                assistantItems,
+                            )
+                        } else {
+                            viewModel.settings.addSystemPrompt(
+                                title,
+                                systemItems,
+                                userItems,
+                                assistantItems,
+                            )
+                        }
+                        editingEntry = null
+                    },
+                    onBack = { editingEntry = null },
+                    showDocFab = showDocFab,
+                )
+            }
         } else {
             PromptList(
                 systemPrompts = systemPrompts,
@@ -90,10 +130,17 @@ fun SettingsPromptsPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                 onSelectPrompt = { viewModel.settings.setActiveSystemPrompt(it) },
                 onEdit = { editingEntry = it },
                 onDuplicate = { entry ->
-                    val copyTitle = context.getString(R.string.prompts_duplicate_title, entry.title)
+                    val copyTitle = duplicateTitleTemplate.replace(
+                        DUPLICATE_TITLE_TOKEN,
+                        entry.title,
+                    )
                     editingEntry = entry.duplicateAsDraft(copyTitle)
                 },
-                onAdd = { showTemplatePicker = true },
+                onAdd = {
+                    templateActionGeneration += 1
+                    templateActionInFlight = false
+                    showTemplatePicker = true
+                },
                 onDeleteRequest = { showDeletePromptConfirm = it },
                 onBack = onBack
             )
@@ -102,9 +149,12 @@ fun SettingsPromptsPage(viewModel: ChatViewModel, onBack: () -> Unit) {
 
     if (showTemplatePicker) {
         ModalBottomSheet(
-            onDismissRequest = { showTemplatePicker = false },
+            onDismissRequest = {
+                templateActionGeneration += 1
+                templateActionInFlight = false
+                showTemplatePicker = false
+            },
             sheetState = templateSheetState,
-            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
             containerColor = MaterialTheme.colorScheme.surfaceContainer
         ) {
             DialogWindowEdgeToEdge()
@@ -121,7 +171,11 @@ fun SettingsPromptsPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                 leadingContent = {
                     Icon(Icons.Default.Add, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 },
-                modifier = Modifier.fillMaxWidth().clickable {
+                startPadding = SETTINGS_ITEM_SHEET_PADDING,
+                endPadding = SETTINGS_ITEM_SHEET_PADDING,
+                modifier = Modifier.fillMaxWidth().sheetOptionClickable(
+                    enabled = !templateActionInFlight,
+                ) {
                     pickTemplate(SystemPromptEntry(title = ""))
                 }
             )
@@ -131,8 +185,14 @@ fun SettingsPromptsPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                 leadingContent = {
                     Icon(Icons.Default.Psychology, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 },
-                modifier = Modifier.fillMaxWidth().clickable {
-                    pickTemplate(DefaultSystemPrompt.create(java.util.Locale.getDefault()))
+                startPadding = SETTINGS_ITEM_SHEET_PADDING,
+                endPadding = SETTINGS_ITEM_SHEET_PADDING,
+                modifier = Modifier.fillMaxWidth().sheetOptionClickable(
+                    enabled = !templateActionInFlight,
+                ) {
+                    pickTemplate(
+                        DefaultSystemPrompt.create(java.util.Locale.getDefault()).copy(title = ""),
+                    )
                 }
             )
             Spacer(modifier = Modifier.height(24.dp))
@@ -165,8 +225,10 @@ private fun SystemPromptEntry.duplicateAsDraft(title: String): SystemPromptEntry
         title = title,
         content = "",
         systemItems = resolvedSystemItems.copyWithNewIds(),
-        userPrependItems = userPrependItems.copyWithNewIds(),
-        userPostpendItems = userPostpendItems.copyWithNewIds()
+        userItems = resolvedUserItems.copyWithNewIds(),
+        assistantItems = resolvedAssistantItems.copyWithNewIds(),
+        userPrependItems = emptyList(),
+        userPostpendItems = emptyList(),
     )
 
 private fun List<PromptTemplateItem>.copyWithNewIds(): List<PromptTemplateItem> =
@@ -220,10 +282,10 @@ private fun PromptList(
                                     IconButton(onClick = { showMenu = true }, modifier = Modifier.size(24.dp)) {
                                         Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.options), modifier = Modifier.size(18.dp))
                                     }
-                                    DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, containerColor = MaterialTheme.colorScheme.surfaceContainer, tonalElevation = 16.dp, shape = RoundedCornerShape(12.dp)) {
-                                        DropdownMenuItem(text = { Text(stringResource(R.string.provider_edit)) }, leadingIcon = { Icon(Icons.Default.Edit, null) }, onClick = { showMenu = false; onEdit(entry) })
-                                        DropdownMenuItem(text = { Text(stringResource(R.string.prompts_duplicate)) }, leadingIcon = { Icon(Icons.Default.ContentCopy, null, modifier = Modifier.scale(0.9f)) }, onClick = { showMenu = false; onDuplicate(entry) })
-                                        DropdownMenuItem(text = { Text(stringResource(R.string.provider_delete), color = MaterialTheme.colorScheme.error) }, leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }, onClick = { showMenu = false; onDeleteRequest(entry) })
+                                    AgoraDropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }, containerColor = MaterialTheme.colorScheme.surfaceContainer, tonalElevation = 16.dp) {
+                                        AgoraDropdownMenuItem(text = { Text(stringResource(R.string.provider_edit)) }, leadingIcon = { Icon(Icons.Default.Edit, null) }, onClick = { showMenu = false; onEdit(entry) })
+                                        AgoraDropdownMenuItem(text = { Text(stringResource(R.string.prompts_duplicate)) }, leadingIcon = { Icon(Icons.Default.ContentCopy, null, modifier = Modifier.scale(0.9f)) }, onClick = { showMenu = false; onDuplicate(entry) })
+                                        AgoraDropdownMenuItem(text = { Text(stringResource(R.string.provider_delete), color = MaterialTheme.colorScheme.error) }, leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }, onClick = { showMenu = false; onDeleteRequest(entry) })
                                     }
                                 }
                             },
@@ -234,20 +296,10 @@ private fun PromptList(
                 }
 
                 add {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 56.dp)
-                            .clickable { onAdd() }
-                            .padding(horizontal = 16.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(stringResource(R.string.prompts_add), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
-                        }
-                    }
+                    SettingsAddItem(
+                        label = stringResource(R.string.prompts_add),
+                        onClick = onAdd,
+                    )
                 }
             }
             SettingsGroupColumn {

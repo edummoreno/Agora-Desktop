@@ -1,63 +1,33 @@
 # Models
 
-Manage which AI models are available and set your default model for conversations.
-
-## Model List
-
-The **Models** page shows all models Agora knows about, organized by provider:
-
-- **Default Model** — The model used for new conversations. Tap to change.
-- **Available Models** — Expand each provider to see its models. Enable the ones you want to use.
-
-### Enable / Disable Models
-
-Check or uncheck the checkbox next to a model to toggle its availability. Disabled models won't appear in the model picker in conversations.
-
-### Rename Models
-
-Tap the edit icon (pen) next to a model to give it a custom alias. This alias appears throughout the app instead of the technical model ID.
-
-### Sync Models
-
-Tap **Sync Models** to fetch the latest available models from all configured API providers. This requires an internet connection and valid API keys.
-
-!!! tip "Local Models"
-    Local models appear under the **Local** provider section. They are managed separately in **Settings → Providers → Local**.
-
----
+Open **Settings → Models** to choose the default model and control which configured models Agora can use.
 
 ## Default Model
 
-The **Default Model** is used for all new conversations. To change it:
+Choose the global default used when a conversation has no model override. Only enabled models appear in this selector and in the chat model picker.
 
-1. Tap the default model row at the top of the Models page
-2. Select a model from the list (only enabled models are shown)
-3. The change takes effect immediately
+## Custom Models
 
-You can override the model per-conversation from the chat screen's model picker.
+Add a model manually when provider discovery does not return the required identifier. Each entry stores a provider, the provider's raw model ID, and an optional display alias. The editor keeps provider and raw ID separate; where no explicit alias is stored, Agora can show an inferred friendly alias.
 
----
+Custom models are grouped by provider. Enable or disable them with their checkboxes, or open an entry to edit or delete it.
 
-## Model Aliases
+## Fetched Models
 
-Model aliases let you give friendly names to models with long technical IDs. For example, you might rename `openai/gpt-4o-mini` to just "GPT-4o Mini".
+**Sync from All Providers** retrieves model catalogs from configured providers. Unconfigured providers are skipped, and synchronization support depends on the provider.
 
-Aliases are shown everywhere: the model picker, conversation headers, and settings pages.
+When the page opens, Agora starts a sync only if the current provider-configuration fingerprint differs from the last attempted full sync. A completed attempt records that captured fingerprint even when one or more providers fail; cancellation does not record it. Use the sync row to retry manually without changing provider configuration.
 
-To remove an alias, clear the text field and save.
+During synchronization, the row crossfades over 250 ms to **Syncing...** with a 24 dp circular indicator. Agora does not show a start snackbar; it reports the completed result afterward.
 
----
+Fetched models are grouped by provider and can be searched by provider, raw model ID, stored alias, or inferred alias. The row presents the friendly name separately from its provider/API identity. Use the checkbox to make a model available, and open its alias action to rename the display label.
 
-## Troubleshooting
+Disabling any model removes it from selection. Deleting a manually added model removes that local configuration entry; neither action deletes remote provider data. Imported chat GGUF files are managed under the Local provider in [Providers](provider.md).
 
-### Models not appearing
+## Provider Name in Model Labels
 
-- Tap **Sync Models** to refresh the list
-- Verify that you have a valid API key for the provider in **Settings → Providers**
-- Check your internet connection
-- Some providers may be temporarily unavailable
+The Rename dialog and custom model editor include **Show Provider name** below the alias field. When enabled, complete model labels show `Model name (Provider)`; when disabled, they show only the model name. Changing or clearing the alias does not change this switch. Provider-grouped settings lists keep their separate provider labels.
 
-### Local models not shown
+Click **Save** to save both the alias and the switch. Cancel, Back, or dismissing the dialog discards both edits. New models show the provider by default. On upgrade, Agora initializes the switch once to preserve each existing model's previous presentation. The choice is included in settings backups.
 
-- Import a GGUF model file in **Settings → Providers → Local**
-- The model must be in valid GGUF format
+See [Providers](provider.md) and [Generation](generation.md).

@@ -10,10 +10,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.*
+import com.newoether.agora.ui.motion.MotionAwareCircularProgressIndicator as CircularProgressIndicator
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import com.newoether.agora.R
@@ -21,6 +21,11 @@ import com.newoether.agora.ui.components.clearFocusOnTap
 import com.newoether.agora.util.Constants
 import com.newoether.agora.viewmodel.ChatViewModel
 import kotlinx.coroutines.launch
+import com.newoether.agora.ui.components.AgoraDropdownMenu
+import com.newoether.agora.ui.components.AgoraDropdownMenuItem
+import com.newoether.agora.ui.components.SecretVisibilityToggle
+import com.newoether.agora.ui.components.rememberSecretVisible
+import com.newoether.agora.ui.components.secretVisualTransformation
 
 /** A preset (provider name, base URL, known model ids) for the remote-embedding dialog. */
 internal data class EmbeddingProviderPreset(val name: String, val baseUrl: String, val models: List<String>)
@@ -101,14 +106,13 @@ internal fun AddRemoteEmbeddingDialog(
                             IconButton(onClick = { provExpanded = true }) {
                                 Icon(Icons.Default.ArrowDropDown, null)
                             }
-                            DropdownMenu(
+                            AgoraDropdownMenu(
                                 expanded = provExpanded,
                                 onDismissRequest = { provExpanded = false },
-                                containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                                shape = RoundedCornerShape(12.dp)
+                                containerColor = MaterialTheme.colorScheme.surfaceContainer
                             ) {
                                 providers.forEachIndexed { idx, p ->
-                                    DropdownMenuItem(
+                                    AgoraDropdownMenuItem(
                                         text = { Text(p.name) },
                                         onClick = {
                                             state.selectedProviderIdx = idx
@@ -116,7 +120,7 @@ internal fun AddRemoteEmbeddingDialog(
                                             // Auto-fill the configured key for the selected provider
                                             // (OpenAI, OpenRouter, …), replacing a key that was
                                             // auto-filled for the previously selected provider.
-                                            viewModel.resolveEmbeddingKeyForProviderExact(p.name)?.key?.let { state.apiKeys[idx] = it }
+                                            viewModel.ragManager.resolveEmbeddingKeyForProviderExact(p.name)?.key?.let { state.apiKeys[idx] = it }
                                             if (p.models.isNotEmpty()) {
                                                 state.modelName = p.models.first()
                                                 state.isCustomModel = false
@@ -146,12 +150,14 @@ internal fun AddRemoteEmbeddingDialog(
                 Spacer(modifier = Modifier.height(12.dp))
                 // API Key
                 val currentKey = state.apiKeys[state.selectedProviderIdx]
+                var keyVisible by rememberSecretVisible()
                 OutlinedTextField(
                     value = currentKey,
                     onValueChange = { state.apiKeys[state.selectedProviderIdx] = it },
                     label = { Text(stringResource(R.string.embedding_api_key)) },
                     placeholder = { Text(stringResource(R.string.embedding_api_key_hint)) },
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = secretVisualTransformation(keyVisible),
+                    trailingIcon = { SecretVisibilityToggle(keyVisible) { keyVisible = !keyVisible } },
                     singleLine = true,
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier.fillMaxWidth()
@@ -183,14 +189,13 @@ internal fun AddRemoteEmbeddingDialog(
                             IconButton(onClick = { state.showModelDropdown = true }) {
                                 Icon(Icons.Default.ArrowDropDown, null)
                             }
-                            DropdownMenu(
+                            AgoraDropdownMenu(
                                 expanded = state.showModelDropdown,
                                 onDismissRequest = { state.showModelDropdown = false },
-                                containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                                shape = RoundedCornerShape(12.dp)
+                                containerColor = MaterialTheme.colorScheme.surfaceContainer
                             ) {
                                 provider.models.forEach { model ->
-                                    DropdownMenuItem(
+                                    AgoraDropdownMenuItem(
                                         text = { Text(model) },
                                         onClick = {
                                             state.modelName = model
@@ -199,7 +204,7 @@ internal fun AddRemoteEmbeddingDialog(
                                         }
                                     )
                                 }
-                                DropdownMenuItem(
+                                AgoraDropdownMenuItem(
                                     text = { Text(stringResource(R.string.embedding_custom)) },
                                     onClick = {
                                         state.modelName = ""
@@ -277,9 +282,9 @@ internal fun AddRemoteEmbeddingDialog(
                     state.isTesting = true
                     state.testStatus = null
                     scope.launch {
-                        val result = viewModel.testRemoteEmbedding(finalModel, state.baseUrl, state.apiKeys[state.selectedProviderIdx])
+                        val result = viewModel.remoteEmbeddingConnectionTester.test(finalModel, state.baseUrl, state.apiKeys[state.selectedProviderIdx])
                         if (result != null && result.startsWith("OK")) {
-                            viewModel.addEmbeddingModel(
+                            viewModel.ragManager.addEmbeddingModel(
                                 com.newoether.agora.data.EmbeddingModelConfig(
                                     name = finalName,
                                     type = com.newoether.agora.data.EmbeddingModelType.REMOTE,

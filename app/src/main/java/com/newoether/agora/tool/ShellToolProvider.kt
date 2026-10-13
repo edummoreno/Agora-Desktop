@@ -1,65 +1,98 @@
 package com.newoether.agora.tool
 
-import com.newoether.agora.api.HttpClient
 import com.newoether.agora.api.ToolDefinition
-import com.newoether.agora.api.ToolFunction
-import com.newoether.agora.api.ToolParameters
-import com.newoether.agora.api.ToolProperty
 import com.newoether.agora.data.ShellDeviceConfig
+import com.newoether.agora.model.ToolCallData
 import com.newoether.agora.sandbox.SandboxManagerFactory
-import com.newoether.agora.util.ShellClient
-import com.newoether.agora.util.SshClient
+import com.newoether.agora.util.Constants
+import com.newoether.agora.util.SHELL_COMMAND_MAX_BYTES
+import com.newoether.agora.util.SHELL_WORKDIR_MAX_BYTES
+import com.newoether.agora.util.SHELL_FILE_WRITE_MAX_BYTES
 import com.newoether.agora.viewmodel.GenerationContext
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
+private fun shellCommandValidationError(command: String, workdir: String): String? = when {
+    command.toByteArray(Charsets.UTF_8).size > SHELL_COMMAND_MAX_BYTES ->
+        "command exceeds 64KB limit"
+    workdir.toByteArray(Charsets.UTF_8).size > SHELL_WORKDIR_MAX_BYTES ->
+        "workdir exceeds 32KB limit"
+    else -> null
+}
+
 class ShellToolProvider(
-    private val sandboxFactory: SandboxManagerFactory? = null
+    private val sandboxFactory: SandboxManagerFactory? = null,
+    private val imageStore: ToolImageStore? = null,
 ) : ToolProvider {
 
     private val sandbox = sandboxFactory?.create()
+    private val durableJobs = ShellDurableJobExecutor()
 
     /**
-     * Optional user-confirmation gate for state-changing operations on REMOTE
-     * servers (SSH/Conch). Returns true to proceed, false to deny. The local
-     * sandbox is proot-isolated and is never gated. Set by the owning ViewModel;
-     * null = no gate (proceed).
+     * Optional user-confirmation gate for state-changing operations. The isolated local sandbox
+     * normally proceeds directly; once shared storage is mounted, local commands/writes are gated
+     * too because they can mutate files outside the app sandbox.
      */
-    var confirm: (suspend (server: String, summary: String) -> Boolean)? = null
+    var confirm: (suspend (server: String, summary: String, conversationId: String?) -> Boolean)? = null
 
-    /** Run [confirm] for remote devices only; sandbox (device == null) always proceeds. */
-    private suspend fun confirmRemote(device: ShellDeviceConfig?, summary: String): Boolean {
-        if (device == null) return true
-        return confirm?.invoke(device.name.ifBlank { "${device.type} server" }, summary) ?: true
+    /** Best-effort cleanup after the caller has committed these exact results to Room. */
+    internal suspend fun acknowledgeCommittedJobs(
+        calls: List<ToolCallData>,
+        context: GenerationContext,
+    ) {
+        val acknowledgements = terminalShellJobAcknowledgements(calls)
+        if (acknowledgements.isEmpty()) return
+        supervisorScope {
+            acknowledgements.map { acknowledgement ->
+                async {
+                    withTimeoutOrNull(JOB_ACK_TIMEOUT_MS) {
+                        val backend = getConchBackend(acknowledgement.serverName, context)
+                            ?: return@withTimeoutOrNull
+                        try {
+                            backend.acknowledgeJob(acknowledgement.jobId)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            // Retention TTL/count remains the safe fallback when cleanup is offline.
+                        } finally {
+                            backend.close()
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+    }
+
+    private suspend fun confirmTarget(
+        ctx: GenerationContext,
+        device: ShellDeviceConfig?,
+        summary: String,
+        localSharedStorageExposed: Boolean = false,
+    ): Boolean {
+        if (device == null && !localSharedStorageExposed) return true
+        val target = device?.name?.ifBlank { "${device.type} server" }
+            ?: "Local Sandbox · /mnt/shared"
+        return confirm?.invoke(target, summary, ctx.conversationId) ?: true
+    }
+
+    private fun targetsSharedStorage(path: String): Boolean {
+        val normalized = path.trim().replace('\\', '/').replace(Regex("/+"), "/")
+        return normalized == "/mnt/shared" || normalized.startsWith("/mnt/shared/")
     }
 
     // ── Helpers ────────────────────────────────────────────
-
-    private fun parseToolArgs(arguments: String): Map<String, JsonElement> {
-        return try {
-            val argsStr = arguments.ifBlank { "{}" }
-            Json.decodeFromString<Map<String, JsonElement>>(argsStr)
-        } catch (_: Exception) { emptyMap() }
-    }
-
-    private fun jsonError(type: String, message: String, server: String? = null, command: String? = null): String {
-        return buildJsonObject {
-            if (type.isNotBlank()) put("type", type)
-            put("error", "error"); put("message", message)
-            if (server != null) put("server", server)
-            if (command != null) put("command", command)
-        }.toString()
-    }
-
-    private fun arg(args: Map<String, JsonElement>, key: String): String {
-        return (args[key] as? JsonPrimitive)?.content ?: ""
-    }
 
     private fun resolveShellDevice(serverName: String, ctx: GenerationContext): ShellDeviceConfig? {
         if (serverName.equals("Local Sandbox", ignoreCase = true)) return null
@@ -85,201 +118,15 @@ class ShellToolProvider(
         }
     }
 
-    // ── Backend sealed interface ───────────────────────────
-
-    private sealed interface Backend {
-        suspend fun executeCommand(cmd: String, workdir: String, timeoutMs: Int): String
-        suspend fun fileRead(path: String, offset: Long, limit: Long): String
-        suspend fun fileWrite(path: String, content: String): String?
-        suspend fun fileGlob(pattern: String, basePath: String, depth: Int?): Result<List<String>>
-        suspend fun fileGrep(pattern: String, basePath: String, fileGlob: String): Result<List<ShellClient.GrepMatch>>
-        fun close()
-    }
-
-    private inner class ConchBackend(device: ShellDeviceConfig) : Backend {
-        private val url = device.serverUrl.trimEnd('/')
-        private val apiKey = device.apiKey
-        private val pubKey = device.conchPublicKey
-        private val deviceName = device.name
-
-        private val client: ShellClient by lazy { ShellClient(url, apiKey, pubKey) }
-
-        override suspend fun executeCommand(cmd: String, workdir: String, timeoutMs: Int): String {
-            if (url.isBlank()) return jsonError("execute_shell_command", "Server \"$deviceName\" has no URL configured.")
-            if (!client.fetchPublicKey() && apiKey.isNotBlank()) {
-                return jsonError("execute_shell_command", "encryption_failed", server = deviceName)
-            }
-            val prepared = client.prepareRequest(cmd, timeoutMs, workdir)
-            val handle = HttpClient.streamPost("${prepared.serverUrl}/execute", prepared.body, prepared.headers)
-            return try {
-                val output = StringBuilder()
-                var exitCode: Int? = null
-                var errorMessage: String? = null
-                var currentEvent: String? = null
-                val aesKey = client.getSessionKey()
-                while (true) {
-                    val line = handle.readLine() ?: break
-                    when {
-                        line.startsWith("event: ") -> currentEvent = line.substring(7).trim()
-                        line.startsWith("data: ") -> {
-                            var dataStr = line.substring(6).trim()
-                            if (aesKey != null) {
-                                try { dataStr = client.decryptSseData(dataStr) } catch (_: Exception) { continue }
-                            }
-                            val dataJson = try { Json.parseToJsonElement(dataStr).jsonObject } catch (_: Exception) { null } ?: continue
-                            when (currentEvent) {
-                                "line" -> {
-                                    val text = (dataJson["line"] as? JsonPrimitive)?.content
-                                    if (text != null) output.append(text).append('\n')
-                                }
-                                "result" -> exitCode = (dataJson["exit_code"] as? JsonPrimitive)?.content?.toIntOrNull()
-                                "error" -> errorMessage = (dataJson["message"] as? JsonPrimitive)?.content
-                            }
-                        }
-                    }
-                }
-                buildJsonObject {
-                    put("type", "execute_shell_command"); put("server", deviceName); put("command", cmd)
-                    if (errorMessage != null) { put("error", "execution_error"); put("message", errorMessage) }
-                    else { put("exit_code", exitCode ?: -1) }
-                    put("output", output.toString().trimEnd())
-                }.toString()
-            } catch (e: Exception) {
-                jsonError("execute_shell_command", e.message ?: "Unknown error", server = deviceName, command = cmd)
-            } finally { handle.close() }
-        }
-
-        override suspend fun fileRead(path: String, offset: Long, limit: Long): String {
-            val result = client.fileRead(path, offset, limit)
-            if (result.error != null) return jsonError("file_read", result.error, server = deviceName)
-            return buildJsonObject {
-                put("type", "file_read"); put("server", deviceName); put("path", path)
-                put("content", result.content); put("lines", result.lines)
-            }.toString()
-        }
-
-        override suspend fun fileWrite(path: String, content: String): String? =
-            client.fileWrite(path, content)?.let { jsonError("file_write", it, server = deviceName) }
-
-        override suspend fun fileGlob(pattern: String, basePath: String, depth: Int?): Result<List<String>> =
-            client.fileGlob(pattern, basePath, depth)
-
-        override suspend fun fileGrep(pattern: String, basePath: String, fileGlob: String): Result<List<ShellClient.GrepMatch>> =
-            client.fileGrep(pattern, basePath, fileGlob)
-
-        override fun close() {}
-    }
-
-    private inner class SshBackend(device: ShellDeviceConfig) : Backend {
-        private val host = device.sshHost
-        private val port = device.sshPort
-        private val user = device.sshUser
-        private val password = device.sshPassword
-        private val timeout = device.timeout
-        private val deviceName = device.name
-        private val hostKey = device.sshHostKey
-
-        private val client: SshClient by lazy {
-            SshClient(
-                host, port, user, password, timeout * 1000,
-                pinnedHostKey = hostKey,
-                // Un-pinned devices stay usable (capture-only); once a key is pinned it is enforced.
-                allowUnknownHostKey = hostKey.isBlank()
-            )
-        }
-
-        override suspend fun executeCommand(cmd: String, workdir: String, timeoutMs: Int): String {
-            if (host.isBlank()) return jsonError("execute_shell_command", "SSH device \"$deviceName\" has no host configured.")
-            return try {
-                val result = client.executeCommand(cmd, workdir)
-                buildJsonObject {
-                    put("type", "execute_shell_command"); put("server", deviceName); put("command", cmd)
-                    put("exit_code", result.exitCode)
-                    put("output", (result.stdout + if (result.stderr.isNotBlank()) "\n${result.stderr}" else "").trimEnd())
-                }.toString()
-            } catch (e: Exception) {
-                jsonError("execute_shell_command", e.message ?: "Unknown error", server = deviceName, command = cmd)
-            }
-        }
-
-        override suspend fun fileRead(path: String, offset: Long, limit: Long): String {
-            return try {
-                val content = client.fileRead(path, offset, limit)
-                buildJsonObject {
-                    put("type", "file_read"); put("server", deviceName); put("path", path)
-                    put("content", content); put("lines", content.lines().size)
-                }.toString()
-            } catch (e: Exception) {
-                jsonError("file_read", "SFTP read failed: ${e.message}", server = deviceName)
-            }
-        }
-
-        override suspend fun fileWrite(path: String, content: String): String? =
-            client.fileWrite(path, content)?.let { jsonError("file_write", it, server = deviceName) }
-
-        override suspend fun fileGlob(pattern: String, basePath: String, depth: Int?): Result<List<String>> =
-            Result.success(client.fileGlob(pattern, basePath, depth))
-
-        override suspend fun fileGrep(pattern: String, basePath: String, fileGlob: String): Result<List<ShellClient.GrepMatch>> =
-            client.fileGrep(pattern, basePath, fileGlob).map { matches ->
-                matches.map { ShellClient.GrepMatch(it.path, it.line, it.content) }
-            }
-
-        override fun close() { client.close() }
-    }
-
-    private inner class SandboxBackend : Backend {
-        private val mgr = sandbox ?: throw IllegalStateException("Sandbox not available")
-
-        override suspend fun executeCommand(cmd: String, workdir: String, timeoutMs: Int): String {
-            if (!mgr.isAvailable()) return jsonError("execute_shell_command", "Local Sandbox is not installed.")
-            return try {
-                val result = mgr.executeCommand(cmd, workdir, timeoutMs)
-                buildJsonObject {
-                    put("type", "execute_shell_command"); put("server", "Local Sandbox"); put("command", cmd)
-                    put("exit_code", result.exitCode)
-                    put("output", (result.stdout + if (result.stderr.isNotBlank()) "\n${result.stderr}" else "").trimEnd())
-                }.toString()
-            } catch (e: Exception) {
-                jsonError("execute_shell_command", e.message ?: "Unknown error", server = "Local Sandbox", command = cmd)
-            }
-        }
-
-        override suspend fun fileRead(path: String, offset: Long, limit: Long): String {
-            return try {
-                val content = mgr.fileRead(path, offset, limit)
-                buildJsonObject {
-                    put("type", "file_read"); put("server", "Local Sandbox"); put("path", path)
-                    put("content", content); put("lines", content.lines().size)
-                }.toString()
-            } catch (e: Exception) {
-                jsonError("file_read", e.message ?: "Read failed", server = "Local Sandbox")
-            }
-        }
-
-        override suspend fun fileWrite(path: String, content: String): String? =
-            mgr.fileWrite(path, content)?.let { jsonError("file_write", it, server = "Local Sandbox") }
-
-        override suspend fun fileGlob(pattern: String, basePath: String, depth: Int?): Result<List<String>> =
-            Result.success(mgr.fileGlob(pattern, basePath, depth))
-
-        override suspend fun fileGrep(pattern: String, basePath: String, fileGlob: String): Result<List<ShellClient.GrepMatch>> =
-            mgr.fileGrep(pattern, basePath, fileGlob).map { matches ->
-                matches.map { ShellClient.GrepMatch(it.path, it.line, it.content) }
-            }
-
-        override fun close() {}
-    }
-
     private suspend fun getBackend(serverName: String, ctx: GenerationContext): Backend? {
         // Local Sandbox
         if (serverName.equals("Local Sandbox", ignoreCase = true) && ctx.sandboxEnabled) {
-            if (sandbox?.isAvailable() == true) return SandboxBackend()
+            if (sandbox?.isAvailable() == true) return SandboxBackend(sandbox)
             if (sandbox != null) return null
         }
         if (serverName.isBlank()) {
             if (ctx.sandboxEnabled && sandbox?.isAvailable() == true) {
-                return SandboxBackend()
+                return SandboxBackend(sandbox)
             }
         }
         val device = resolveShellDevice(serverName, ctx) ?: return null
@@ -291,139 +138,46 @@ class ShellToolProvider(
 
     // ── ToolProvider interface ─────────────────────────────
 
-    override fun definitions(ctx: GenerationContext): List<ToolDefinition> {
-        if (!ctx.shellEnabled) return emptyList()
-        if (ctx.shellDevices.isEmpty() && !ctx.sandboxEnabled) return emptyList()
-
-        val hasLocal = ctx.sandboxEnabled
-        val allDeviceNames = buildList {
-            if (hasLocal) add("Local Sandbox")
-            addAll(ctx.shellDevices.map { d -> "\"${d.name}\"" })
-        }
-        val deviceNamesStr = allDeviceNames.joinToString(", ")
-
-        val serverPropDesc = if (allDeviceNames.size == 1) {
-            "The shell server name (optional, defaults to the only available server: ${allDeviceNames[0]})."
-        } else {
-            "The shell server name. Use list_shells to see available servers: $deviceNamesStr."
-        }
-        val shellRequiredParams = if (allDeviceNames.size == 1) listOf("command") else listOf("command", "server")
-
-        val shellTools = listOf(
-            ToolDefinition(function = ToolFunction(
-                name = "list_shells",
-                description = "List configured shell servers including the local sandbox (if enabled).",
-                parameters = ToolParameters(properties = emptyMap(), required = emptyList())
-            )),
-            ToolDefinition(function = ToolFunction(
-                name = "execute_shell_command",
-                description = "Execute a shell command on a remote server or local sandbox.",
-                parameters = ToolParameters(
-                    properties = mapOf(
-                        "command" to ToolProperty("string", "The shell command to execute."),
-                        "server" to ToolProperty("string", serverPropDesc),
-                        "timeout_ms" to ToolProperty("integer", "Timeout in milliseconds (optional, default 30s)."),
-                        "workdir" to ToolProperty("string", "Working directory (optional).")
-                    ),
-                    required = shellRequiredParams
-                )
-            ))
-        )
-
-        val fileServerProperty = if (allDeviceNames.size == 1) {
-            ToolProperty("string", "The shell server name (optional, defaults to the only available server).")
-        } else {
-            ToolProperty("string", "The shell server name. Available: $deviceNamesStr.")
-        }
-        val fileRequired = if (allDeviceNames.size == 1) emptyList<String>() else listOf("server")
-
-        val fileTools = listOf(
-            ToolDefinition(function = ToolFunction(
-                name = "file_read",
-                description = "Read a file from a shell server or local sandbox.",
-                parameters = ToolParameters(
-                    properties = mapOf(
-                        "path" to ToolProperty("string", "Absolute path to the file."),
-                        "server" to fileServerProperty,
-                        "offset" to ToolProperty("integer", "Byte offset (optional)."),
-                        "limit" to ToolProperty("integer", "Max bytes to read (optional, default 1MB).")
-                    ),
-                    required = listOf("path") + fileRequired
-                )
-            )),
-            ToolDefinition(function = ToolFunction(
-                name = "file_write",
-                description = "Write content to a file on a shell server or local sandbox.",
-                parameters = ToolParameters(
-                    properties = mapOf(
-                        "path" to ToolProperty("string", "Absolute path to the file."),
-                        "content" to ToolProperty("string", "Content to write."),
-                        "server" to fileServerProperty
-                    ),
-                    required = listOf("path", "content") + fileRequired
-                )
-            )),
-            ToolDefinition(function = ToolFunction(
-                name = "file_edit",
-                description = "Edit a file on a shell server or local sandbox by replacing old_string with new_string.",
-                parameters = ToolParameters(
-                    properties = mapOf(
-                        "path" to ToolProperty("string", "Absolute path to the file."),
-                        "old_string" to ToolProperty("string", "The exact text to find and replace."),
-                        "new_string" to ToolProperty("string", "The replacement text."),
-                        "server" to fileServerProperty,
-                        "replace_all" to ToolProperty("boolean", "Replace all occurrences (optional, default false).")
-                    ),
-                    required = listOf("path", "old_string", "new_string") + fileRequired
-                )
-            )),
-            ToolDefinition(function = ToolFunction(
-                name = "file_glob",
-                description = "List files on a shell server or local sandbox matching a glob pattern.",
-                parameters = ToolParameters(
-                    properties = mapOf(
-                        "pattern" to ToolProperty("string", "Glob pattern matched against file names (e.g. '*.go', '*.md')."),
-                        "server" to fileServerProperty,
-                        "path" to ToolProperty("string", "Base directory for the search (optional)."),
-                        "depth" to ToolProperty("integer", "Max directory levels to search below 'path': 1 = base directory only, higher values recurse deeper, 0 = unlimited recursion. Omit for the server default.")
-                    ),
-                    required = listOf("pattern") + fileRequired
-                )
-            )),
-            ToolDefinition(function = ToolFunction(
-                name = "file_grep",
-                description = "Search for a regex pattern in files on a shell server or local sandbox.",
-                parameters = ToolParameters(
-                    properties = mapOf(
-                        "pattern" to ToolProperty("string", "Regular expression pattern to search for."),
-                        "server" to fileServerProperty,
-                        "path" to ToolProperty("string", "File or directory to search in (optional)."),
-                        "glob" to ToolProperty("string", "Filter files by glob pattern (optional).")
-                    ),
-                    required = listOf("pattern") + fileRequired
-                )
-            ))
-        )
-
-        return shellTools + fileTools
-    }
+    override fun definitions(ctx: GenerationContext): List<ToolDefinition> =
+        ShellToolDefinitions.build(ctx)
 
     override suspend fun execute(name: String, arguments: String, ctx: GenerationContext): String {
         return when (name) {
             "list_shells" -> listShells(ctx)
             "execute_shell_command" -> executeShellCommand(arguments, ctx)
+            "list_shell_jobs" -> durableJobs.listShellJobs(arguments, ctx)
+            "get_shell_job" -> durableJobs.getShellJob(arguments, ctx)
+            "wait_for_job" -> durableJobs.waitForShellJob(arguments, ctx)
+            "stop_shell_job" -> stopShellJob(arguments, ctx)
             "file_read" -> executeFileRead(arguments, ctx)
             "file_write" -> executeFileWrite(arguments, ctx)
             "file_edit" -> executeFileEdit(arguments, ctx)
             "file_glob" -> executeFileGlob(arguments, ctx)
             "file_grep" -> executeFileGrep(arguments, ctx)
+            "view_image" -> executeViewImage(arguments, ctx).text
             else -> "Unknown tool: $name"
+        }
+    }
+
+    override fun executeEvents(
+        name: String,
+        arguments: String,
+        ctx: GenerationContext,
+    ): Flow<ToolExecutionEvent> {
+        return when (name) {
+            "execute_shell_command" -> executeShellCommandEvents(arguments, ctx)
+            "wait_for_job" -> waitForShellJobEvents(arguments, ctx)
+            "view_image" -> flow {
+                emit(ToolExecutionEvent.Completed(executeViewImage(arguments, ctx)))
+            }
+            else -> super<ToolProvider>.executeEvents(name, arguments, ctx)
         }
     }
 
     override fun handles(name: String): Boolean = name in setOf(
         "list_shells", "execute_shell_command",
-        "file_read", "file_write", "file_edit", "file_glob", "file_grep"
+        "list_shell_jobs", "get_shell_job", "wait_for_job", "stop_shell_job",
+        "file_read", "file_write", "file_edit", "file_glob", "file_grep", "view_image"
     )
 
     // ── list_shells ────────────────────────────────────────
@@ -463,22 +217,355 @@ class ShellToolProvider(
         val command = arg(args, "command")
         if (command.isBlank()) return jsonError("execute_shell_command", "no_command")
         val serverName = arg(args, "server")
-        val timeoutMs = (arg(args, "timeout_ms").toIntOrNull() ?: 30000).coerceIn(1000, 120000)
         val workdir = arg(args, "workdir")
+        shellCommandValidationError(command, workdir)?.let { message ->
+            return jsonError("execute_shell_command", message, server = serverName)
+        }
+        val background = boolArg(args, "background")
+        val foregroundMaxMs = Constants.TOOL_EXECUTION_TIMEOUT_MS.toInt()
+        val timeoutMax = if (background) {
+            ShellDurableJobExecutor.BACKGROUND_JOB_MAX_MS
+        } else {
+            foregroundMaxMs
+        }
+        val rawTimeout = arg(args, "timeout_ms")
+        if (rawTimeout.isBlank()) return jsonError(
+            "execute_shell_command", "timeout_ms is required", server = serverName, command = command,
+        )
+        val timeoutMs = (rawTimeout.toIntOrNull()
+            ?: return jsonError(
+                "execute_shell_command",
+                "timeout_ms must be an integer, got \"$rawTimeout\"",
+                server = serverName,
+                command = command,
+            )).coerceIn(1000, timeoutMax)
+        if (background) {
+            val backend = getConchBackend(serverName, ctx)
+                ?: return jsonError(
+                    "execute_shell_command",
+                    conchServerNotFoundMessage(serverName, ctx),
+                    server = serverName,
+                    command = command,
+                )
+            return try {
+                if (!confirmTarget(ctx, backend.device, "start background job: $ $command")) {
+                    return jsonError(
+                        "execute_shell_command",
+                        "denied_by_user: the user declined to run this background command",
+                        server = backend.device.name,
+                        command = command,
+                    )
+                }
+                backend.startJob(command, workdir, timeoutMs)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (e: Exception) {
+                jsonError(
+                    "execute_shell_command",
+                    e.message ?: "Failed to start background job",
+                    server = backend.device.name,
+                    command = command,
+                )
+            } finally {
+                backend.close()
+            }
+        }
 
         val backend = getBackend(serverName, ctx)
             ?: return jsonError("execute_shell_command", serverNotFoundMessage(serverName, ctx))
-        try {
-            if (!confirmRemote(resolveShellDevice(serverName, ctx), "$ $command")) {
+        return try {
+            // Gate on the backend's ACTUAL target: with a blank server name the sandbox wins
+            // resolution, while resolveShellDevice() would name an unrelated remote device.
+            if (!confirmTarget(
+                    ctx,
+                    backend.device,
+                    "$ $command",
+                    localSharedStorageExposed =
+                        backend.device == null && ctx.sandboxSharedStorageEnabled,
+                )
+            ) {
                 return jsonError("execute_shell_command", "denied_by_user: the user declined to run this command", server = serverName, command = command)
             }
-            return backend.executeCommand(command, workdir, timeoutMs)
+            if (backend is ConchBackend) {
+                durableJobs.executeDurableForeground(
+                    backend = backend,
+                    command = command,
+                    workdir = workdir,
+                    waitMs = timeoutMs.coerceAtMost(maxWaitMs(ctx)),
+                )
+            } else {
+                backend.executeCommand(command, workdir, timeoutMs)
+            }
+        } finally {
+            backend.close()
+        }
+    }
+
+    /**
+     * Starts a Conch command as a durable job, then treats foreground execution as a bounded wait
+     * on that same process. A wait expiry returns ownership to the model through job_id; it never
+     * kills or replays the command.
+     */
+
+    private fun executeShellCommandEvents(
+        arguments: String,
+        ctx: GenerationContext,
+    ): Flow<ToolExecutionEvent> = flow {
+        val args = parseToolArgs(arguments)
+        val command = arg(args, "command")
+        if (command.isBlank()) {
+            emit(ToolExecutionEvent.Completed(jsonError("execute_shell_command", "no_command")))
+            return@flow
+        }
+        val serverName = arg(args, "server")
+        val workdir = arg(args, "workdir")
+        shellCommandValidationError(command, workdir)?.let { message ->
+            emit(
+                ToolExecutionEvent.Completed(
+                    jsonError("execute_shell_command", message, server = serverName),
+                ),
+            )
+            return@flow
+        }
+        if (boolArg(args, "background")) {
+            val device = resolveShellDevice(serverName, ctx)?.takeIf { it.type != "ssh" }
+            if (device == null) {
+                emit(
+                    ToolExecutionEvent.Completed(
+                        jsonError(
+                            "execute_shell_command",
+                            conchServerNotFoundMessage(serverName, ctx),
+                            server = serverName,
+                            command = command,
+                        ),
+                    ),
+                )
+                return@flow
+            }
+            emit(ToolExecutionEvent.TargetResolved(device.name))
+            emit(ToolExecutionEvent.Progress("Starting durable background job"))
+            // executeShellCommand owns the one confirmation and backend lifecycle.
+            emit(ToolExecutionEvent.Completed(executeShellCommand(arguments, ctx)))
+            return@flow
+        }
+        val foregroundMaxMs = Constants.TOOL_EXECUTION_TIMEOUT_MS.toInt()
+        val rawTimeout = arg(args, "timeout_ms")
+        if (rawTimeout.isBlank()) {
+            emit(
+                ToolExecutionEvent.Completed(
+                    jsonError(
+                        "execute_shell_command", "timeout_ms is required",
+                        server = serverName, command = command,
+                    ),
+                ),
+            )
+            return@flow
+        }
+        val timeoutMs = (rawTimeout.toIntOrNull()
+            ?: run {
+                emit(
+                    ToolExecutionEvent.Completed(
+                        jsonError(
+                            "execute_shell_command",
+                            "timeout_ms must be an integer, got \"$rawTimeout\"",
+                            server = serverName,
+                            command = command,
+                        ),
+                    ),
+                )
+                return@flow
+            }).coerceIn(1000, foregroundMaxMs)
+        val backend = getBackend(serverName, ctx)
+        if (backend == null) {
+            emit(
+                ToolExecutionEvent.Completed(
+                    jsonError("execute_shell_command", serverNotFoundMessage(serverName, ctx)),
+                ),
+            )
+            return@flow
+        }
+        emit(
+            ToolExecutionEvent.TargetResolved(
+                backend.device?.name?.ifBlank { "Untitled" } ?: "Local Sandbox",
+            ),
+        )
+        try {
+            if (!confirmTarget(
+                    ctx,
+                    backend.device,
+                    "$ $command",
+                    localSharedStorageExposed =
+                        backend.device == null && ctx.sandboxSharedStorageEnabled,
+                )
+            ) {
+                emit(
+                    ToolExecutionEvent.Completed(
+                        jsonError(
+                            "execute_shell_command",
+                            "denied_by_user: the user declined to run this command",
+                            server = serverName,
+                            command = command,
+                        ),
+                    ),
+                )
+                return@flow
+            }
+            if (backend is ConchBackend) {
+                emit(ToolExecutionEvent.Progress("Running as a durable foreground job"))
+                emit(
+                    ToolExecutionEvent.Completed(
+                        durableJobs.executeDurableForeground(
+                            backend = backend,
+                            command = command,
+                            workdir = workdir,
+                            waitMs = timeoutMs.coerceAtMost(maxWaitMs(ctx)),
+                            onOutput = { delta ->
+                                emit(ToolExecutionEvent.OutputDelta(delta))
+                            },
+                        )
+                    )
+                )
+            } else {
+                emit(ToolExecutionEvent.Progress("Running command"))
+                backend.executeCommandEvents(command, workdir, timeoutMs).collect { emit(it) }
+            }
+        } finally {
+            backend.close()
+        }
+    }
+
+    private fun waitForShellJobEvents(
+        arguments: String,
+        ctx: GenerationContext,
+    ): Flow<ToolExecutionEvent> = flow {
+        val serverName = arg(parseToolArgs(arguments), "server")
+        resolveConchDevice(serverName, ctx)?.let { device ->
+            emit(ToolExecutionEvent.TargetResolved(device.name))
+        }
+        emit(ToolExecutionEvent.Progress("Waiting for durable job"))
+        emit(
+            ToolExecutionEvent.Completed(
+                durableJobs.waitForShellJob(arguments, ctx) { snapshot ->
+                    emit(ToolExecutionEvent.OutputSnapshot(snapshot))
+                },
+            ),
+        )
+    }
+
+    // ── Durable job mutations ──────────────────────────────
+
+    private suspend fun stopShellJob(arguments: String, ctx: GenerationContext): String {
+        val args = parseToolArgs(arguments)
+        val jobId = arg(args, "job_id")
+        if (jobId.isBlank()) return jsonError("stop_shell_job", "job_id is required")
+        val serverName = arg(args, "server")
+        val backend = getConchBackend(serverName, ctx)
+            ?: return jsonError(
+                "stop_shell_job",
+                conchServerNotFoundMessage(serverName, ctx),
+                server = serverName,
+            )
+        return try {
+            if (!confirmTarget(ctx, backend.device, "stop background shell job: $jobId")) {
+                return jsonError(
+                    "stop_shell_job",
+                    "denied_by_user: the user declined to stop this job",
+                    server = backend.device.name,
+                )
+            }
+            backend.stopJob(jobId)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
+            jsonError(
+                "stop_shell_job",
+                e.message ?: "Failed to stop shell job",
+                server = backend.device.name,
+            )
         } finally {
             backend.close()
         }
     }
 
     // ── File tools ─────────────────────────────────────────
+
+    private suspend fun executeViewImage(
+        arguments: String,
+        ctx: GenerationContext,
+    ): ToolExecutionResult {
+        val args = parseToolArgs(arguments)
+        val path = arg(args, "path")
+        if (path.isBlank()) {
+            return ToolExecutionResult(
+                text = jsonError("view_image", "path is required"),
+                isError = true,
+            )
+        }
+        val serverName = arg(args, "server")
+        val store = imageStore
+            ?: return ToolExecutionResult(
+                text = jsonError(
+                    "view_image",
+                    "Tool image storage is unavailable",
+                    server = serverName,
+                ),
+                isError = true,
+            )
+        val backend = getConchBackend(serverName, ctx)
+            ?: return ToolExecutionResult(
+                text = jsonError(
+                    "view_image",
+                    conchServerNotFoundMessage(serverName, ctx),
+                    server = serverName,
+                ),
+                isError = true,
+            )
+        return try {
+            val remote = backend.viewImage(path)
+            if (remote.error != null) {
+                return ToolExecutionResult(
+                    text = jsonError(
+                        "view_image",
+                        remote.error,
+                        server = backend.device.name,
+                    ),
+                    isError = true,
+                )
+            }
+            val attachment = withContext(Dispatchers.IO) {
+                store.persistBase64(
+                    data = remote.data,
+                    mimeType = remote.mimeType,
+                    filePrefix = "conch",
+                )
+            }
+            ToolExecutionResult(
+                text = buildJsonObject {
+                    put("type", "view_image")
+                    put("server", backend.device.name)
+                    put("path", path)
+                    put("mime_type", attachment.mimeType)
+                    put("size", attachment.sizeBytes)
+                    attachment.width?.let { put("width", it) }
+                    attachment.height?.let { put("height", it) }
+                    put("ok", true)
+                }.toString(),
+                images = listOf(attachment),
+                transcribeImages = true,
+            )
+        } catch (error: Exception) {
+            ToolExecutionResult(
+                text = jsonError(
+                    "view_image",
+                    error.message ?: "Failed to load image",
+                    server = backend.device.name,
+                ),
+                isError = true,
+            )
+        } finally {
+            backend.close()
+        }
+    }
 
     private suspend fun executeFileRead(arguments: String, ctx: GenerationContext): String {
         val args = parseToolArgs(arguments)
@@ -491,7 +578,29 @@ class ShellToolProvider(
         val backend = getBackend(serverName, ctx)
             ?: return jsonError("file_read", serverNotFoundMessage(serverName, ctx))
         try {
-            return backend.fileRead(path, offset, limit)
+            val result = try {
+                backend.fileRead(path, offset, limit)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                return jsonError(
+                    "file_read",
+                    e.message ?: "Read failed",
+                    server = backend.device?.name ?: "Local Sandbox",
+                )
+            }
+            result.error?.let {
+                return jsonError(
+                    "file_read",
+                    it,
+                    server = backend.device?.name ?: "Local Sandbox",
+                )
+            }
+            return boundedFileReadJson(
+                server = backend.device?.name ?: "Local Sandbox",
+                path = path,
+                result = result,
+            )
         } finally {
             backend.close()
         }
@@ -503,12 +612,22 @@ class ShellToolProvider(
         if (path.isBlank()) return jsonError("file_write", "path is required")
         val content = arg(args, "content")
         if (content.isBlank()) return jsonError("file_write", "content is required")
+        if (content.toByteArray(Charsets.UTF_8).size > SHELL_FILE_WRITE_MAX_BYTES) {
+            return jsonError("file_write", "content exceeds 1MB limit")
+        }
         val serverName = arg(args, "server")
 
         val backend = getBackend(serverName, ctx)
             ?: return jsonError("file_write", serverNotFoundMessage(serverName, ctx))
         try {
-            if (!confirmRemote(resolveShellDevice(serverName, ctx), "write file: $path")) {
+            if (!confirmTarget(
+                    ctx,
+                    backend.device,
+                    "write file: $path",
+                    localSharedStorageExposed =
+                        backend.device == null && targetsSharedStorage(path),
+                )
+            ) {
                 return jsonError("file_write", "denied_by_user: the user declined to write this file", server = serverName)
             }
             val error = backend.fileWrite(path, content)
@@ -534,36 +653,40 @@ class ShellToolProvider(
         val backend = getBackend(serverName, ctx)
             ?: return jsonError("file_edit", serverNotFoundMessage(serverName, ctx))
         try {
-            if (!confirmRemote(resolveShellDevice(serverName, ctx), "edit file: $path")) {
+            if (!confirmTarget(
+                    ctx,
+                    backend.device,
+                    "edit file: $path",
+                    localSharedStorageExposed =
+                        backend.device == null && targetsSharedStorage(path),
+                )
+            ) {
                 return jsonError("file_edit", "denied_by_user: the user declined to edit this file", server = serverName)
             }
-            // Read the file
-            val rawContent = try {
-                backend.fileRead(path, 0, 0)
+            val result = try {
+                backend.fileEdit(path, oldStr, newStr, replaceAll)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                return jsonError("file_edit", "read error: ${e.message}")
+                return jsonError(
+                    "file_edit",
+                    e.message ?: "Edit failed",
+                    server = backend.device?.name ?: "Local Sandbox",
+                )
             }
-            // Extract actual content (Conch wraps it in JSON, others return raw text)
-            val actualContent = try {
-                val obj = Json.parseToJsonElement(rawContent).jsonObject
-                (obj["content"] as? JsonPrimitive)?.content ?: rawContent
-            } catch (_: Exception) { rawContent }
-
-            val count = actualContent.split(oldStr).size - 1
-            if (count == 0) {
-                return jsonError("file_edit", "old_string not found in file")
-            }
-            if (count > 1 && !replaceAll) {
-                return jsonError("file_edit", "Found $count matches. Use replace_all=true or provide more context.")
-            }
-            val replaced = actualContent.replace(oldStr, newStr)
-            val writeError = backend.fileWrite(path, replaced)
-            if (writeError != null) {
-                return jsonError("file_edit", "write error: $writeError")
+            result.error?.let {
+                return jsonError(
+                    "file_edit",
+                    it,
+                    server = backend.device?.name ?: "Local Sandbox",
+                )
             }
             return buildJsonObject {
-                put("type", "file_edit"); put("path", path)
-                put("replaced", if (replaceAll) count else 1)
+                put("type", "file_edit")
+                put("server", backend.device?.name ?: "Local Sandbox")
+                put("path", path)
+                put("replaced", result.replacements)
+                if (result.sha256.isNotBlank()) put("sha256", result.sha256)
             }.toString()
         } finally {
             backend.close()
@@ -584,10 +707,11 @@ class ShellToolProvider(
         try {
             val result = backend.fileGlob(pattern, basePath, depth)
             return result.fold(
-                onSuccess = { files ->
+                onSuccess = { (files, truncated) ->
                     buildJsonObject {
                         put("type", "file_glob"); put("pattern", pattern)
                         putJsonArray("files") { files.forEach { add(JsonPrimitive(it)) } }
+                        put("truncated", truncated)
                     }.toString()
                 },
                 onFailure = { e -> jsonError("file_glob", e.message ?: "Unknown error") }
@@ -610,7 +734,7 @@ class ShellToolProvider(
         try {
             val result = backend.fileGrep(pattern, basePath, fileGlob)
             return result.fold(
-                onSuccess = { matches ->
+                onSuccess = { (matches, truncated) ->
                     buildJsonObject {
                         put("type", "file_grep"); put("pattern", pattern)
                         putJsonArray("matches") {
@@ -620,6 +744,7 @@ class ShellToolProvider(
                                 })
                             }
                         }
+                        put("truncated", truncated)
                     }.toString()
                 },
                 onFailure = { e -> jsonError("file_grep", e.message ?: "Unknown error") }
@@ -627,5 +752,12 @@ class ShellToolProvider(
         } finally {
             backend.close()
         }
+    }
+
+    companion object {
+        private const val JOB_ACK_TIMEOUT_MS = 3_000L
+
+        internal fun maxWaitMs(ctx: GenerationContext): Int =
+            ShellDurableJobExecutor.maxWaitMs(ctx)
     }
 }

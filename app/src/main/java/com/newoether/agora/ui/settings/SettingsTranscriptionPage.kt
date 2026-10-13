@@ -4,7 +4,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -22,24 +21,38 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.newoether.agora.R
+import com.newoether.agora.data.modelAliasDisplayName
+import com.newoether.agora.data.providerDisplayName
+import com.newoether.agora.ui.common.PersistedSliderFeedbackGate
 import com.newoether.agora.ui.components.providerIcon
-import com.newoether.agora.model.apiModelName
 import com.newoether.agora.util.Constants
 import com.newoether.agora.viewmodel.ChatViewModel
+import com.newoether.agora.ui.components.AgoraDropdownMenu
+import com.newoether.agora.ui.components.AgoraDropdownMenuItem
+import com.newoether.agora.ui.components.optionClickable
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsTranscriptionPage(viewModel: ChatViewModel, onBack: () -> Unit) {
+    val imageTranscriptionEnabled by viewModel.settings.imageTranscriptionEnabled.collectAsState()
     val transcriptionEnabledModels by viewModel.settings.imageTranscriptionEnabledModels.collectAsState()
     val transcriptionModel by viewModel.settings.imageTranscriptionModel.collectAsState()
     val batchSize by viewModel.settings.imageTranscriptionBatchSize.collectAsState()
     val transcriptionPrompt by viewModel.settings.imageTranscriptionPrompt.collectAsState()
     val modelAliases by viewModel.settings.modelAliases.collectAsState()
     val enabledModels by viewModel.settings.enabledModels.collectAsState()
+    val customProviders by viewModel.settings.customProviders.collectAsState()
     var showModelDialog by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
     var showPromptDialog by remember { mutableStateOf(false) }
     var showMenuForModel by remember { mutableStateOf<String?>(null) }
+    val batchSizeGate = remember {
+        PersistedSliderFeedbackGate(
+            initialPersisted = batchSize,
+            toDisplay = Int::toFloat,
+        )
+    }
+    LaunchedEffect(batchSize) { batchSizeGate.reconcile(batchSize) }
     val showDocFab by viewModel.settings.showDocumentationFab.collectAsState()
 
     val availableToAdd = remember(enabledModels, transcriptionEnabledModels) {
@@ -53,14 +66,51 @@ fun SettingsTranscriptionPage(viewModel: ChatViewModel, onBack: () -> Unit) {
     ) {
             SettingsGroupColumn {
                 SettingsGroup(
+                    title = stringResource(R.string.settings_transcription),
+                    items = listOf({
+                        SettingsItem(
+                            headlineContent = {
+                                Text(stringResource(R.string.transcription_enable))
+                            },
+                            supportingContent = {
+                                Text(stringResource(R.string.settings_transcription_desc))
+                            },
+                            leadingContent = {
+                                Icon(
+                                    Icons.Default.Image,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            },
+                            trailingContent = {
+                                Switch(
+                                    checked = imageTranscriptionEnabled,
+                                    onCheckedChange =
+                                        viewModel.settings::setImageTranscriptionEnabled,
+                                )
+                            },
+                            modifier = Modifier.clickable {
+                                viewModel.settings.setImageTranscriptionEnabled(
+                                    !imageTranscriptionEnabled
+                                )
+                            },
+                        )
+                    }),
+                )
+
+                if (imageTranscriptionEnabled) {
+                SettingsGroup(
                     title = stringResource(R.string.transcription_model),
                     items = listOf({
                         val displayName = transcriptionModel?.let {
-                            val parsed = com.newoether.agora.model.ModelId.parse(it)
-                            val alias = modelAliases[it]
-                            alias ?: parsed.apiModelName
+                            modelAliasDisplayName(it, modelAliases, customProviders)
                         } ?: stringResource(R.string.transcription_no_model)
-                        val selectedProvider = transcriptionModel?.let { com.newoether.agora.model.ModelId.parse(it).providerName }
+                        val selectedProvider = transcriptionModel?.let {
+                            providerDisplayName(
+                                com.newoether.agora.model.ModelId.parse(it).providerName,
+                                customProviders,
+                            )
+                        }
                         val selectedIconRes = selectedProvider?.let { providerIcon(it) } ?: 0
                         val isSelectedLocal = selectedProvider.equals(Constants.PROVIDER_LOCAL, ignoreCase = true)
                         SettingsItem(
@@ -101,10 +151,16 @@ fun SettingsTranscriptionPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                     } else {
                         val sorted = transcriptionEnabledModels.toList().sortedBy { it }
                         for (model in sorted) {
-                            val alias = modelAliases[model]
                             val parsedModel = com.newoether.agora.model.ModelId.parse(model)
-                            val displayName = alias ?: parsedModel.apiModelName
-                            val providerName = parsedModel.providerName
+                            val displayName = modelAliasDisplayName(
+                                model,
+                                modelAliases,
+                                customProviders,
+                            )
+                            val providerName = providerDisplayName(
+                                parsedModel.providerName,
+                                customProviders,
+                            )
                             add {
                                 val iconRes = providerIcon(providerName)
                                 val isLocal = providerName.equals(Constants.PROVIDER_LOCAL, ignoreCase = true)
@@ -123,14 +179,13 @@ fun SettingsTranscriptionPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                             IconButton(onClick = { showMenuForModel = model }, modifier = Modifier.size(24.dp)) {
                                                 Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.options), modifier = Modifier.size(18.dp))
                                             }
-                                            DropdownMenu(
+                                            AgoraDropdownMenu(
                                                 containerColor = MaterialTheme.colorScheme.surfaceContainer,
                                                 tonalElevation = 16.dp,
                                                 expanded = showMenuForModel == model,
-                                                onDismissRequest = { showMenuForModel = null },
-                                                shape = RoundedCornerShape(12.dp)
+                                                onDismissRequest = { showMenuForModel = null }
                                             ) {
-                                                DropdownMenuItem(
+                                                AgoraDropdownMenuItem(
                                                     text = { Text(stringResource(R.string.delete), color = MaterialTheme.colorScheme.error) },
                                                     leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
                                                     onClick = {
@@ -148,16 +203,10 @@ fun SettingsTranscriptionPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                     }
                     if (availableToAdd.isNotEmpty()) {
                         add {
-                            Box(
-                                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable { showAddDialog = true }.padding(horizontal = 16.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                                    Spacer(Modifier.width(8.dp))
-                                    Text(stringResource(R.string.transcription_add_model), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
-                                }
-                            }
+                            SettingsAddItem(
+                                label = stringResource(R.string.transcription_add_model),
+                                onClick = { showAddDialog = true },
+                            )
                         }
                     }
                 }
@@ -200,7 +249,7 @@ fun SettingsTranscriptionPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                             modifier = Modifier.weight(1f)
                                         )
                                         Text(
-                                            text = batchSize.toString(),
+                                            text = batchSizeGate.displayed.toInt().toString(),
                                             style = MaterialTheme.typography.labelLarge,
                                             color = MaterialTheme.colorScheme.primary,
                                             fontWeight = FontWeight.Bold,
@@ -214,8 +263,24 @@ fun SettingsTranscriptionPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                         modifier = Modifier.padding(top = 4.dp)
                                     )
                                     Slider(
-                                        value = batchSize.toFloat(),
-                                        onValueChange = { viewModel.settings.setImageTranscriptionBatchSize(it.toInt()) },
+                                        value = batchSizeGate.displayed,
+                                        onValueChange = batchSizeGate::updateFromGesture,
+                                        onValueChangeFinished = {
+                                            val committed = batchSizeGate.displayed.toInt()
+                                            if (committed == batchSize) {
+                                                batchSizeGate.settleWithoutWrite(
+                                                    batchSize,
+                                                    committed.toFloat(),
+                                                )
+                                            } else {
+                                                batchSizeGate.expectPersisted(
+                                                    committed,
+                                                    committed.toFloat(),
+                                                )
+                                                viewModel.settings
+                                                    .setImageTranscriptionBatchSize(committed)
+                                            }
+                                        },
                                         valueRange = 1f..10f,
                                         steps = 8,
                                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
@@ -226,6 +291,7 @@ fun SettingsTranscriptionPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                     }
                 }
             )
+                }
             }
             if (showDocFab) { Spacer(modifier = Modifier.height(80.dp)) }
     }
@@ -238,20 +304,23 @@ fun SettingsTranscriptionPage(viewModel: ChatViewModel, onBack: () -> Unit) {
             title = { Text(stringResource(R.string.transcription_select_model), fontWeight = FontWeight.Bold) },
             text = {
                 LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                    items(enabledModelsList) { model ->
-                        val alias = modelAliases[model]
+                    items(enabledModelsList, key = { it }) { model ->
                         val dialogParsed = com.newoether.agora.model.ModelId.parse(model)
-                        val displayName = alias ?: dialogParsed.apiModelName
+                        val displayName = modelAliasDisplayName(
+                            model,
+                            modelAliases,
+                            customProviders,
+                        )
                         SettingsItem(
                             headlineContent = { Text(displayName, fontWeight = if (transcriptionModel == model) FontWeight.Bold else FontWeight.Normal) },
-                            supportingContent = { Text(dialogParsed.providerName, style = MaterialTheme.typography.bodySmall) },
+                            supportingContent = { Text(providerDisplayName(dialogParsed.providerName, customProviders), style = MaterialTheme.typography.bodySmall) },
                             leadingContent = {
                                 RadioButton(selected = transcriptionModel == model, onClick = {
                                     viewModel.settings.setImageTranscriptionModel(model)
                                     showModelDialog = false
                                 })
                             },
-                            modifier = Modifier.clickable {
+                            modifier = Modifier.optionClickable {
                                 viewModel.settings.setImageTranscriptionModel(model)
                                 showModelDialog = false
                             }
@@ -272,20 +341,23 @@ fun SettingsTranscriptionPage(viewModel: ChatViewModel, onBack: () -> Unit) {
             title = { Text(stringResource(R.string.transcription_add_model), fontWeight = FontWeight.Bold) },
             text = {
                 LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                    items(availableList) { model ->
-                        val alias = modelAliases[model]
+                    items(availableList, key = { it }) { model ->
                         val addParsed = com.newoether.agora.model.ModelId.parse(model)
-                        val displayName = alias ?: addParsed.apiModelName
+                        val displayName = modelAliasDisplayName(
+                            model,
+                            modelAliases,
+                            customProviders,
+                        )
                         val checked = model in selected
                         SettingsItem(
                             headlineContent = { Text(displayName) },
-                            supportingContent = { Text(addParsed.providerName, style = MaterialTheme.typography.bodySmall) },
+                            supportingContent = { Text(providerDisplayName(addParsed.providerName, customProviders), style = MaterialTheme.typography.bodySmall) },
                             leadingContent = {
                                 Checkbox(checked = checked, onCheckedChange = {
                                     selected = if (checked) selected - model else selected + model
                                 })
                             },
-                            modifier = Modifier.clickable {
+                            modifier = Modifier.optionClickable {
                                 selected = if (checked) selected - model else selected + model
                             }
                         )

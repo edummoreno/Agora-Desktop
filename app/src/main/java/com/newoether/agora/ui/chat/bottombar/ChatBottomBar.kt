@@ -1,375 +1,565 @@
 package com.newoether.agora.ui.chat.bottombar
 
-import com.newoether.agora.ui.components.DialogWindowEdgeToEdge
-
+import android.net.Uri
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
+import androidx.compose.foundation.content.MediaType
+import androidx.compose.foundation.content.ReceiveContentListener
+import androidx.compose.foundation.content.TransferableContent
+import androidx.compose.foundation.content.consume
+import androidx.compose.foundation.content.contentReceiver
+import androidx.compose.foundation.content.hasMediaType
 import com.newoether.agora.model.apiModelName
+import com.newoether.agora.model.ContextBudget
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.EnterTransition
-import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.*
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.material3.Icon
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.input.*
 import androidx.compose.material.icons.Icons
-
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Image
-
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.draw.scale
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import com.newoether.agora.R
-import com.newoether.agora.ui.chat.PdfPageSelectDialog
-import com.newoether.agora.ui.chat.VideoSliceDialog
+import com.newoether.agora.model.AttachmentImportState
 import com.newoether.agora.ui.common.LocalAgoraHaptics
-import com.newoether.agora.ui.common.ThinkingControlPanel
-import com.newoether.agora.ui.common.thinkingControlShortLabel
-import com.newoether.agora.ui.theme.ChatType
-import com.newoether.agora.util.noOpBringIntoView
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
+import com.newoether.agora.ui.motion.LocalAgoraMotionPolicy
+import com.newoether.agora.viewmodel.ConversationComposerController
+import com.newoether.agora.viewmodel.ConversationComposerSnapshot
+import com.newoether.agora.viewmodel.ConversationComposerSubmissionController
+import com.newoether.agora.viewmodel.QueuedSend
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import com.newoether.agora.data.CustomProviderConfig
+import com.newoether.agora.data.thinkingCapabilityForSelectedModel
+import com.newoether.agora.model.ModelId
+import com.newoether.agora.model.OpenAiServiceTiers
+import com.newoether.agora.model.ThinkingResolution
+import com.newoether.agora.util.Constants
+import com.newoether.agora.data.providerDisplayName
+import com.newoether.agora.data.modelDisplayName
+import com.newoether.agora.ui.components.AgoraDropdownMenuItem
+import com.newoether.agora.ui.components.AgoraExposedDropdownMenu
+internal val CHAT_BOTTOM_BAR_OUTER_RADIUS = 28.dp
+internal val CHAT_BOTTOM_BAR_OUTER_SHAPE = RoundedCornerShape(CHAT_BOTTOM_BAR_OUTER_RADIUS)
+// Non-expanded bar geometry, measured from the bar's outer edge.
+// The controls capsule and the send button share one height and sit 10 dp from the start/end and
+// bottom edges. They are not concentric with the outer corners: the owner chose larger controls.
+internal val COMPOSER_CONTROL_HEIGHT = 48.dp
+internal val COMPOSER_CONTROLS_INSET = 10.dp
+// The expand icon sits 18 dp from the top and end edges. The expand button's circle is a fade to
+// transparent, so only its 20 dp icon is placed, not the circle.
+internal val COMPOSER_CORNER_CONTENT_INSET = 18.dp
+// The input text starts 18 dp from the start edge and 16 dp from the top, and ends 22 dp above the
+// controls.
+internal val COMPOSER_TEXT_START_INSET = 18.dp
+internal val COMPOSER_TEXT_TOP_INSET = 16.dp
+internal val COMPOSER_TEXT_CONTROLS_GAP = 22.dp
+internal val COMPOSER_EXPAND_BUTTON_SIZE = 40.dp
+internal val COMPOSER_EXPAND_ICON_SIZE = 20.dp
+// The host padding the status rows, attachment previews and expanded collapse button share.
+internal val COMPOSER_HOST_SIDE_PADDING = 4.dp
+internal val COMPOSER_HOST_TOP_PADDING = 8.dp
+internal fun contextUsageExceedsCompactThreshold(
+    estimatedTokens: Int, tokenBudget: Int, thresholdPercent: Int,
+): Boolean {
+    val normalizedBudget = tokenBudget.coerceAtLeast(1)
+    val normalizedPercent = thresholdPercent.coerceIn(50, 100)
+    val threshold = ((normalizedBudget.toLong() * normalizedPercent + 99L) / 100L)
+        .coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    return tokenBudget > 0 && estimatedTokens > threshold
+}
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun ChatBottomBar(
-    onSendMessage: (String, List<com.newoether.agora.model.SelectedAttachment>) -> Boolean,
+internal fun ChatBottomBar(
+    submissionController: ConversationComposerSubmissionController,
+    composerOwnerId: String,
+    composerController: ConversationComposerController,
+    composerSnapshot: ConversationComposerSnapshot,
     onStopGeneration: () -> Unit = {},
     isLoading: Boolean,
+    isCompacting: Boolean = false,
     isSwitching: Boolean = false,
     enabledModels: Set<String>,
     selectedModel: String,
     modelAliases: Map<String, String> = emptyMap(),
+    modelProviderNames: Map<String, Boolean> = emptyMap(),
+    customProviders: List<CustomProviderConfig> = emptyList(),
     codeExecutionEnabled: Boolean = false,
     googleSearchEnabled: Boolean = false,
+    openAiWebSearchAvailable: Boolean = false,
+    openAiWebSearchEnabled: Boolean = false,
     thinkingEnabled: Boolean = true,
     thinkingLevel: String = "medium",
     thinkingBudgetEnabled: Boolean = false,
     thinkingBudgetTokens: Int = 4096,
+    openAiServiceTierAvailable: Boolean = false,
+    openAiServiceTierEnabled: Boolean = false,
+    openAiServiceTier: String = "auto",
     webSearchEnabled: Boolean = false,
     shellEnabled: Boolean = false,
+    showLowContextMode: Boolean = false,
+    lowContextModeEnabled: Boolean = false,
     onCodeExecutionToggle: (Boolean) -> Unit = {},
     onGoogleSearchToggle: (Boolean) -> Unit = {},
+    onOpenAiWebSearchToggle: (Boolean) -> Unit = {},
     onThinkingToggle: (Boolean) -> Unit = {},
     onThinkingLevelChange: (String) -> Unit = {},
     onThinkingBudgetEnabledChange: (Boolean) -> Unit = {},
     onThinkingBudgetTokensChange: (Int) -> Unit = {},
+    onOpenAiServiceTierToggle: (Boolean) -> Unit = {},
+    onOpenAiServiceTierChange: (String) -> Unit = {},
     onWebSearchToggle: (Boolean) -> Unit = {},
     onShellToggle: (Boolean) -> Unit = {},
+    onLowContextModeToggle: (Boolean) -> Unit = {},
     onModelSelect: (String) -> Unit,
-    onImageClick: (String) -> Unit = {},
     onAllMediaClick: ((urls: List<String>, index: Int) -> Unit)? = null,
     onFileContentClick: ((fileName: String, content: String) -> Unit)? = null,
     onPdfPagesClick: ((pages: List<String>, startIndex: Int) -> Unit)? = null,
     onPdfPreviewSelect: ((pages: List<String>, startIndex: Int) -> Unit)? = null,
-    onPdfViewerClosed: (() -> Unit)? = null,
     pdfViewerSelection: Set<Int> = emptySet(),
     onTogglePdfSelection: ((Int) -> Unit)? = null,
     onInitPdfSelection: ((Set<Int>) -> Unit)? = null,
     fullScreenViewerUrls: List<String>? = null,
     modifier: Modifier = Modifier,
     textFieldState: TextFieldState = rememberSaveable(saver = TextFieldState.Saver) { TextFieldState() },
+    composerState: ChatComposerState = rememberChatComposerState(),
     focusRequester: FocusRequester = FocusRequester(),
+    onInputFocusChanged: (Boolean) -> Unit = {},
     isExpanded: Boolean = false,
     isExpandAnimating: Boolean = false,
     onCollapse: () -> Unit = {},
     onExpand: () -> Unit = {},
     showWebSearch: Boolean = true,
     showShell: Boolean = true,
-    onAdvancedClick: () -> Unit = {}
+    onAdvancedClick: () -> Unit = {},
+    compactDefaultModel: String? = null,
+    compactDefaultPrompt: String = "",
+    compactDefaultRetainCount: Int = 6,
+    contextEstimatedTokens: Int = 0,
+    contextTokenBudget: Int = ContextBudget.DEFAULT_TOKENS,
+    contextCompactThresholdPercent: Int = 90,
+    contextCompactEnabled: Boolean = true,
+    contextSystemPromptTokens: Int = 0,
+    contextToolTokens: Int = 0,
+    canCompact: Boolean = false,
+    onCompactClick: () -> Unit = {},
+    queuedSends: List<QueuedSend> = emptyList(),
+    onRemoveQueuedSend: (String) -> Unit = {},
+    onSendQueuedNow: () -> Unit = {},
+    isStopping: Boolean = false,
 ) {
+    val motionPolicy = LocalAgoraMotionPolicy.current
     val scrollState = rememberScrollState()
     BackHandler(enabled = isExpanded) { onCollapse() }
     val isModelValid = selectedModel.isNotBlank() && enabledModels.contains(selectedModel)
-
-    // No-op bring-into-view to prevent auto-scrolling on text field focus
-
-    val composer = rememberChatComposerState()
-
+    val modelId = ModelId.parse(selectedModel)
+    val thinkingCapability = remember(selectedModel, customProviders) {
+        thinkingCapabilityForSelectedModel(selectedModel, customProviders)
+    }
+    val displayedThinking = ThinkingResolution.resolve(
+        thinkingCapability,
+        thinkingEnabled,
+        thinkingLevel,
+        thinkingBudgetEnabled,
+        thinkingBudgetTokens,
+    )
+    val displayedThinkingLevel = displayedThinking.effort
+        ?: thinkingCapability.nearestEffort(thinkingLevel) ?: thinkingLevel
+    val displayedThinkingEnabled = displayedThinking.enabled
+    val displayedThinkingBudgetEnabled = displayedThinking.budgetTokens != null
+    val displayedThinkingBudgetTokens = displayedThinking.budgetTokens ?: thinkingBudgetTokens
+    val availableServiceTiers = OpenAiServiceTiers.availableTiers(
+        modelId.modelName,
+        officialProvider = modelId.providerName == Constants.PROVIDER_OPENAI,
+    )
+    val displayedServiceTier = OpenAiServiceTiers.mappedTier(
+        openAiServiceTier,
+        modelId.modelName,
+        officialProvider = modelId.providerName == Constants.PROVIDER_OPENAI,
+    )
+    val submissionState = remember(submissionController, composerOwnerId) {
+        submissionController.observeState(composerOwnerId)
+    }
+    DisposableEffect(submissionController, composerOwnerId) {
+        onDispose { submissionController.releaseState(composerOwnerId) }
+    }
+    val submission by submissionState.collectAsState()
+    val composer = composerState
     val context = LocalContext.current
     val haptics = LocalAgoraHaptics.current
-    var showThinkingSheet by rememberSaveable { mutableStateOf(false) }
-
-    // Restore PDF dialog after viewer closes
+    val activityLaunchScope = rememberCoroutineScope()
+    suspend fun withOwner(ownerId: String, action: suspend () -> Unit): Boolean {
+        if (submissionController.snapshot(ownerId).isFrozen) return false
+        composerController.load(ownerId)
+        return try {
+            if (submissionController.snapshot(ownerId).isFrozen) false else {
+                action()
+                true
+            }
+        } finally {
+            withContext(NonCancellable) { composerController.release(ownerId) }
+        }
+    }
+    fun importUris(ownerId: String, uris: List<Uri>, forcedType: String? = null, emitSuccessHaptic: Boolean = true) {
+        if (uris.isEmpty() || submissionController.snapshot(ownerId).isFrozen) return
+        activityLaunchScope.launch {
+            val (attachments, rejected) = inspectAttachmentIngress(
+                context,
+                uris,
+                forcedType,
+                composer.acceptsLocalSandboxAttachments(),
+            )
+            if (submissionController.snapshot(ownerId).isFrozen) return@launch
+            composer.reportUnsupportedFiles(rejected)
+            if (attachments.isEmpty()) return@launch
+            var imported = false
+            if (withOwner(ownerId) {
+                for (attachment in attachments) {
+                    if (submissionController.snapshot(ownerId).isFrozen) break
+                    imported = composerController.importAttachment(ownerId, attachment) || imported
+                }
+            } && imported && emitSuccessHaptic) haptics.selection()
+        }
+    }
+    val clipboardImageReceiver = remember(context, composerOwnerId, composer) {
+        object : ReceiveContentListener {
+            override fun onReceive(transferableContent: TransferableContent): TransferableContent? {
+                val imageUris = mutableListOf<Uri>()
+                val advertisesImages = transferableContent.hasMediaType(MediaType.Image)
+                val remaining = transferableContent.consume { item ->
+                    val uri = item.uri ?: return@consume false
+                    val resolvedMime = context.contentResolver.getType(uri)
+                    val isImage = resolvedMime?.startsWith("image/") == true ||
+                        (resolvedMime == null && advertisesImages)
+                    if (isImage) imageUris += uri
+                    isImage
+                }
+                importUris(composerOwnerId, imageUris, "image", emitSuccessHaptic = false)
+                return remaining
+            }
+        }
+    }
+    val showThinkingSheetState = rememberSaveable { mutableStateOf(false) }
+    var showThinkingSheet by showThinkingSheetState
+    val showOpenAiServiceTierSheetState = rememberSaveable { mutableStateOf(false) }
+    var showOpenAiServiceTierSheet by showOpenAiServiceTierSheetState
     LaunchedEffect(fullScreenViewerUrls) {
-        if (fullScreenViewerUrls == null && composer.pdfDialogHiddenForPreview && composer.pendingPdfUri != null) {
+        if (
+            fullScreenViewerUrls == null &&
+            composer.pdfDialogHiddenForPreview &&
+            composer.pendingPdfAttachmentId != null
+        ) {
             composer.showPdfPageDialog = true
             composer.pdfDialogHiddenForPreview = false
         }
     }
+    LaunchedEffect(openAiServiceTierAvailable) {
+        if (!openAiServiceTierAvailable) showOpenAiServiceTierSheet = false
+    }
+    LaunchedEffect(composerOwnerId, composerSnapshot.attachments, submission.isFrozen) {
+        if (submission.isFrozen) {
+            composer.resetPendingPdfState()
+            composer.resetPendingVideoState()
+            return@LaunchedEffect
+        }
+        if (composer.pendingPdfOwnerId != null && composer.pendingPdfOwnerId != composerOwnerId) {
+            composer.resetPendingPdfState()
+        }
+        if (
+            composer.pendingPdfOwnerId == composerOwnerId &&
+            composer.pendingPdfAttachmentId != null &&
+            composerSnapshot.attachments.none {
+                it.localId == composer.pendingPdfAttachmentId &&
+                    it.type == "pdf" && it.importState == AttachmentImportState.PROCESSING &&
+                    it.selectedPages == null
+            }
+        ) composer.resetPendingPdfState()
+        if (composer.pendingPdfAttachmentId == null) {
+            composerSnapshot.attachments.firstOrNull {
+                it.type == "pdf" && it.importState == AttachmentImportState.PROCESSING &&
+                    it.selectedPages == null && (it.pageCount ?: 0) > 0
+            }?.let { attachment ->
+                composer.pendingPdfOwnerId = composerOwnerId
+                composer.pendingPdfAttachmentId = attachment.localId
+                composer.showPdfPageDialog = true
+                onInitPdfSelection?.invoke((0 until minOf(attachment.pageCount ?: 0, 5)).toSet())
+            }
+        }
+        if (composer.pendingVideoOwnerId != null && composer.pendingVideoOwnerId != composerOwnerId) {
+            composer.resetPendingVideoState()
+        }
+        if (
+            composer.pendingVideoOwnerId == composerOwnerId &&
+            composer.pendingVideoAttachmentId != null &&
+            composerSnapshot.attachments.none {
+                it.localId == composer.pendingVideoAttachmentId &&
+                    it.type == "video" && it.importState == AttachmentImportState.PROCESSING &&
+                    it.frameCount == null
+            }
+        ) composer.resetPendingVideoState()
+        if (composer.pendingVideoAttachmentId == null && composer.pendingPdfAttachmentId == null) {
+            composerSnapshot.attachments.firstOrNull {
+                it.type == "video" && it.importState == AttachmentImportState.PROCESSING &&
+                    it.frameCount == null && it.localPath != null
+            }?.let { attachment ->
+                composer.pendingVideoOwnerId = composerOwnerId
+                composer.pendingVideoAttachmentId = attachment.localId
+                composer.showVideoSliceDialog = true
+            }
+        }
+    }
 
+    var pendingPhotoOwnerId by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingVideoPickerOwnerId by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingFileOwnerId by rememberSaveable { mutableStateOf<String?>(null) }
     val photoLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia()
-    ) { uris -> composer.onPickImages(uris) }
+    ) { uris -> pendingPhotoOwnerId?.let { importUris(it, uris, "image") }; pendingPhotoOwnerId = null }
     val videoLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.PickMultipleVisualMedia()
-    ) { uris -> composer.onPickVideos(uris) }
+    ) { uris -> pendingVideoPickerOwnerId?.let { importUris(it, uris, "video") }; pendingVideoPickerOwnerId = null }
     val fileLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.GetMultipleContents()
-    ) { uris -> composer.onPickFiles(uris, onInitPdfSelection) }
-
-    Box(modifier = modifier.fillMaxWidth().then(if (isExpanded) Modifier.fillMaxHeight() else Modifier).padding(start = 4.dp, end = 4.dp, top = 8.dp, bottom = 12.dp)) {
-        Column(modifier = Modifier.fillMaxWidth().then(if (isExpanded) Modifier.fillMaxHeight() else Modifier)) {
-            AnimatedVisibility(
-                visible = isExpanded,
-                enter = EnterTransition.None,
-                exit = shrinkVertically(tween(250)) + fadeOut(tween(250))
-            ) {
-                Spacer(modifier = Modifier.height(44.dp))
-            }
-
-            Column(modifier = Modifier.fillMaxWidth().then(if (isExpanded) Modifier.weight(1f) else Modifier).animateContentSize(tween(400))) {
-        if (composer.selectedAttachments.isNotEmpty() && !isExpanded) {
+    ) { uris -> pendingFileOwnerId?.let { importUris(it, uris) }; pendingFileOwnerId = null }
+    var pendingCameraPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingCameraOwnerId by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingCameraPermissionPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingCameraPermissionOwnerId by rememberSaveable { mutableStateOf<String?>(null) }
+    var internalCameraPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var internalCameraOwnerId by rememberSaveable { mutableStateOf<String?>(null) }
+    val cameraLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.TakePicture()
+    ) { captured ->
+        val path = pendingCameraPath
+        val ownerId = pendingCameraOwnerId
+        pendingCameraPath = null
+        pendingCameraOwnerId = null
+        if (path != null && ownerId != null) composer.completeCameraCapture(
+            ownerId, composerController, submissionController, path, captured,
+        )
+    }
+    val cameraPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val path = pendingCameraPermissionPath
+        val ownerId = pendingCameraPermissionOwnerId
+        pendingCameraPermissionPath = null
+        pendingCameraPermissionOwnerId = null
+        if (granted && path != null && ownerId != null && !submissionController.snapshot(ownerId).isFrozen) {
+            internalCameraPath = path
+            internalCameraOwnerId = ownerId
+        } else if (path != null && ownerId != null) {
+            composer.completeCameraCapture(
+                ownerId, composerController, submissionController, path, captured = false,
+            )
+            if (!granted) composer.reportCameraPreparationFailure()
+        }
+    }
+    fun launchInternalCamera(ownerId: String, privatePath: String) {
+        if (
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.CAMERA,
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            internalCameraPath = privatePath
+            internalCameraOwnerId = ownerId
+        } else {
+            pendingCameraPermissionPath = privatePath
+            pendingCameraPermissionOwnerId = ownerId
+            cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+        }
+    }
+    ChatComposerLayout(
+        textFieldState = textFieldState,
+        focusRequester = focusRequester,
+        onInputFocusChanged = onInputFocusChanged,
+        isExpanded = isExpanded,
+        isExpandAnimating = isExpandAnimating,
+        onExpand = onExpand,
+        onCollapse = onCollapse,
+        modifier = modifier,
+        inputModifier = Modifier.contentReceiver(clipboardImageReceiver),
+        scrollState = scrollState,
+        statusContent = {
+            ComposerStatusColumn(
+                queuedSends = queuedSends,
+                onRemoveQueuedSend = onRemoveQueuedSend,
+                modifier = Modifier.zIndex(0f),
+            )
+        },
+        attachmentContent = {
+        if (composerSnapshot.attachments.isNotEmpty()) {
             AttachmentPreviewRow(
-                composer = composer,
+                attachments = composerSnapshot.attachments,
+                editable = !submission.isFrozen,
+                onRemove = { id -> activityLaunchScope.launch { withOwner(composerOwnerId) { composerController.remove(composerOwnerId, id) } } },
+                onRetry = { id -> activityLaunchScope.launch { withOwner(composerOwnerId) { composerController.retry(composerOwnerId, id) } } },
                 onAllMediaClick = onAllMediaClick,
                 onFileContentClick = onFileContentClick,
                 onPdfPagesClick = onPdfPagesClick,
             )
         }
-
-        Box(modifier = Modifier.fillMaxWidth().then(if (isExpanded) Modifier.weight(1f) else Modifier).noOpBringIntoView()) {
-            TextField(
-                state = textFieldState,
-                scrollState = scrollState,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .then(if (isExpanded) Modifier.fillMaxHeight() else Modifier)
-                    .focusRequester(focusRequester)
-                    .verticalScrollbar(scrollState, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
-                placeholder = {
-                    Text(
-                        stringResource(R.string.ask_agora),
-                        style = ChatType.input,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                    )
-                },
-                enabled = true,
-                lineLimits = TextFieldLineLimits.MultiLine(1, if (isExpanded) Int.MAX_VALUE else 6),
-                contentPadding = PaddingValues(start = 16.dp, top = 12.dp, end = 16.dp, bottom = 16.dp),
-                colors = TextFieldDefaults.colors(
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    disabledIndicatorColor = Color.Transparent,
-                    focusedContainerColor = Color.Transparent,
-                    unfocusedContainerColor = Color.Transparent,
-                    disabledContainerColor = Color.Transparent,
-                    cursorColor = MaterialTheme.colorScheme.primary
-                ),
-                textStyle = ChatType.input.copy(color = MaterialTheme.colorScheme.onSurface)
-            )
-            androidx.compose.animation.AnimatedVisibility(
-                visible = !isExpanded,
-                enter = fadeIn(tween(250)),
-                exit = ExitTransition.None,
-                modifier = Modifier.align(Alignment.TopEnd)
-            ) {
-                val elevatedSurface = MaterialTheme.colorScheme.surfaceColorAtElevation(2.dp)
-                IconButton(onClick = { if (!isExpandAnimating) onExpand() }, modifier = Modifier.padding(end = 4.dp, top = 4.dp).size(40.dp).background(Brush.radialGradient(listOf(elevatedSurface, elevatedSurface.copy(alpha = 0.5f), Color.Transparent)), CircleShape)) { Icon(painter = androidx.compose.ui.res.painterResource(id = R.drawable.expand_all_24px), contentDescription = stringResource(R.string.expand), modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)) }
-            }
-        }
-        }
-
-        Row(modifier = Modifier.fillMaxWidth().padding(top = 6.dp, start = 8.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(48.dp).background(MaterialTheme.colorScheme.surfaceColorAtElevation(10.dp), RoundedCornerShape(100)).padding(horizontal = 8.dp, vertical = 4.dp)) {
-                var showAddMenu by remember { mutableStateOf(false) }
-                var lastAddDismissTime by remember { mutableLongStateOf(0L) }
-                ExposedDropdownMenuBox(
-                    expanded = showAddMenu,
-                    onExpandedChange = { }
-                ) {
-                    IconButton(
-                        onClick = {
-                            haptics.action()
-                            val now = System.currentTimeMillis()
-                            if (showAddMenu) {
-                                showAddMenu = false
-                            } else if (now - lastAddDismissTime > 200) {
-                                showAddMenu = true
+        },
+    ) {
+            ComposerControlGroup {
+                AttachmentAddMenu(
+                    enabled = !submission.isFrozen,
+                    onCamera = {
+                        activityLaunchScope.launch {
+                            val target = composer.createCameraCaptureTarget()
+                            if (target == null) {
+                                composer.reportCameraPreparationFailure()
+                                return@launch
                             }
-                        },
-                        modifier = Modifier.size(32.dp).menuAnchor(type = ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled = true)
-                    ) {
-                        Icon(Icons.Default.Add, stringResource(R.string.add_attachment), modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-
-                    ExposedDropdownMenu(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                        expanded = showAddMenu,
-                        onDismissRequest = {
-                            if (showAddMenu) {
-                                showAddMenu = false
-                                lastAddDismissTime = System.currentTimeMillis()
+                            if (canLaunchSystemImageCapture(context)) {
+                                pendingCameraPath = target.privatePath
+                                pendingCameraOwnerId = composerOwnerId
+                                runCatching { cameraLauncher.launch(target.uri) }
+                                    .onFailure {
+                                        pendingCameraPath = null
+                                        pendingCameraOwnerId = null
+                                        launchInternalCamera(composerOwnerId, target.privatePath)
+                                    }
+                            } else {
+                                launchInternalCamera(composerOwnerId, target.privatePath)
                             }
-                        },
-                        matchTextFieldWidth = false,
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Image, null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Text(stringResource(R.string.photos))
-                                }
-                            },
-                            onClick = {
-                                haptics.selection()
-                                showAddMenu = false
-                                lastAddDismissTime = 0L
-                                photoLauncher.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
-                            }
+                        }
+                    },
+                    onPhotos = {
+                        pendingPhotoOwnerId = composerOwnerId
+                        photoLauncher.launch(
+                            androidx.activity.result.PickVisualMediaRequest(
+                                androidx.activity.result.contract.ActivityResultContracts
+                                    .PickVisualMedia.ImageOnly,
+                            ),
                         )
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Videocam, null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Text(stringResource(R.string.videos))
-                                }
-                            },
-                            onClick = {
-                                haptics.selection()
-                                showAddMenu = false
-                                lastAddDismissTime = 0L
-                                videoLauncher.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.VideoOnly))
-                            }
+                    },
+                    onVideos = {
+                        pendingVideoPickerOwnerId = composerOwnerId
+                        videoLauncher.launch(
+                            androidx.activity.result.PickVisualMediaRequest(
+                                androidx.activity.result.contract.ActivityResultContracts
+                                    .PickVisualMedia.VideoOnly,
+                            ),
                         )
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.AttachFile, null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Text(stringResource(R.string.files))
-                                }
-                            },
-                            onClick = {
-                                haptics.selection()
-                                showAddMenu = false
-                                lastAddDismissTime = 0L
-                                fileLauncher.launch("*/*")
-                            }
-                        )
-                    }
-                }
-                var activeMenu by remember { mutableStateOf<String?>(null) }
+                    },
+                    onFiles = { pendingFileOwnerId = composerOwnerId; fileLauncher.launch("*/*") },
+                )
+                val activeMenuState = remember { mutableStateOf<String?>(null) }
+                var activeMenu by activeMenuState
                 var lastModelDismissTime by remember { mutableLongStateOf(0L) }
+                var lastContextDismissTime by remember { mutableLongStateOf(0L) }
                 var lastToolsDismissTime by remember { mutableLongStateOf(0L) }
 
-                val parsed = com.newoether.agora.model.ModelId.parse(selectedModel)
-                val modelId = parsed.apiModelName
-                val provider = parsed.providerName
-
+                val selectedProvider = providerDisplayName(
+                    com.newoether.agora.model.ModelId.parse(selectedModel).providerName,
+                    customProviders,
+                )
+                val capabilityControlsEnabled = !lowContextModeEnabled
                 val displayText = when {
-                    isModelValid -> modelAliases[selectedModel] ?: ("$modelId ($provider)")
+                    isModelValid -> modelDisplayName(selectedModel, modelAliases, customProviders, modelProviderNames[selectedModel] != false)
                     enabledModels.isNotEmpty() -> stringResource(R.string.select_model)
                     else -> stringResource(R.string.no_model_selected)
                 }
                 
-                ExposedDropdownMenuBox(
+                ComposerModelSelector(
+                    displayText = displayText,
+                    isModelValid = isModelValid,
                     expanded = activeMenu == "model",
-                    onExpandedChange = { }
+                    onClick = {
+                        val now = System.currentTimeMillis()
+                        if (activeMenu == "model") activeMenu = null
+                        else if (now - lastModelDismissTime > 200) activeMenu = "model"
+                    },
+                    onDismissRequest = {
+                        if (activeMenu == "model") {
+                            activeMenu = null
+                            lastModelDismissTime = System.currentTimeMillis()
+                        }
+                    },
                 ) {
-                    TextButton(
-                        onClick = {
-                            haptics.action()
-                            val now = System.currentTimeMillis()
-                            if (activeMenu == "model") {
+                    if (enabledModels.isEmpty()) {
+                        AgoraDropdownMenuItem(
+                            text = { Text(stringResource(R.string.models_no_models)) },
+                            onClick = {
                                 activeMenu = null
-                            } else if (now - lastModelDismissTime > 200) {
-                                activeMenu = "model"
-                            }
-                        },
-                        modifier = Modifier.height(38.dp).widthIn(max = 160.dp).menuAnchor(type = ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled = true),
-                        contentPadding = PaddingValues(8.dp)
-                    ) {
-                        Text(
-                            displayText,
-                            style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            color = if (isModelValid) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                lastModelDismissTime = 0L // Reset to allow immediate re-open
+                            },
+                            enabled = false
                         )
-                    }
-                    
-                    ExposedDropdownMenu(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                        expanded = activeMenu == "model", 
-                        onDismissRequest = { 
-                            if (activeMenu == "model") {
-                                activeMenu = null
-                                lastModelDismissTime = System.currentTimeMillis()
-                            }
-                        },
-                        matchTextFieldWidth = false,
-                        shape = MaterialTheme.shapes.medium
-                    ) {
-                        if (enabledModels.isEmpty()) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.models_no_models)) },
-                                onClick = {
-                                    activeMenu = null
-                                    lastModelDismissTime = 0L // Reset to allow immediate re-open
-                                },
-                                enabled = false
-                            )
-                        } else {
-                            enabledModels.forEach { model ->
-                                DropdownMenuItem(
-                                    text = {
-                                        val parsed = com.newoether.agora.model.ModelId.parse(model)
-                                        val modelId = parsed.apiModelName
-                                        val provider = parsed.providerName
-                                        Text(modelAliases[model] ?: ("$modelId ($provider)"))
+                    } else {
+                        // Grouped by provider, then alphabetical. enabledModels is a Set whose
+                        // iteration order is insertion order (i.e. whenever each model was
+                        // enabled), which scrambles providers together in the picker.
+                        val sortedModels = remember(enabledModels, customProviders) {
+                            enabledModels.sortedWith(
+                                compareBy(
+                                    {
+                                        providerDisplayName(
+                                            com.newoether.agora.model.ModelId.parse(it).providerName,
+                                            customProviders,
+                                        ).lowercase()
                                     },
-                                    onClick = {
-                                        haptics.selection()
-                                        onModelSelect(model)
-                                        activeMenu = null
-                                        lastModelDismissTime = 0L
-                                    }
+                                    { com.newoether.agora.model.ModelId.parse(it).apiModelName.lowercase() },
                                 )
-                            }
+                            )
+                        }
+                        sortedModels.forEach { model ->
+                            ComposerModelMenuItem(
+                                displayText = modelDisplayName(model, modelAliases, customProviders, modelProviderNames[model] != false),
+                                selected = model == selectedModel,
+                                onClick = {
+                                    haptics.selection()
+                                    onModelSelect(model)
+                                    activeMenu = null
+                                    lastModelDismissTime = 0L
+                                }
+                            )
                         }
                     }
                 }
-                
+
+                ComposerContextIndicator(
+                    estimatedTokens = contextEstimatedTokens,
+                    tokenBudget = contextTokenBudget,
+                    compactThresholdPercent = contextCompactThresholdPercent,
+                    compactEnabled = contextCompactEnabled,
+                    systemPromptTokens = contextSystemPromptTokens,
+                    toolTokens = contextToolTokens,
+                    expanded = activeMenu == "context",
+                    onClick = {
+                        val now = System.currentTimeMillis()
+                        if (activeMenu == "context") activeMenu = null
+                        else if (now - lastContextDismissTime > 200) activeMenu = "context"
+                    },
+                    onDismissRequest = {
+                        if (activeMenu == "context") {
+                            activeMenu = null
+                            lastContextDismissTime = System.currentTimeMillis()
+                        }
+                    },
+                )
+
                 ExposedDropdownMenuBox(
                     expanded = activeMenu == "tools",
                     onExpandedChange = { }
                 ) {
                     IconButton(
                         onClick = { 
-                            haptics.action()
                             val now = System.currentTimeMillis()
                             if (activeMenu == "tools") {
                                 activeMenu = null
@@ -379,10 +569,10 @@ fun ChatBottomBar(
                         }, 
                         modifier = Modifier.size(32.dp).menuAnchor(type = ExposedDropdownMenuAnchorType.PrimaryNotEditable, enabled = true)
                     ) {
-                        Icon(Icons.Default.MoreVert, stringResource(R.string.tools), modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Default.MoreVert, stringResource(R.string.tools), modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     
-                    ExposedDropdownMenu(
+                    AgoraExposedDropdownMenu(
                         containerColor = MaterialTheme.colorScheme.surfaceContainer,
                         expanded = activeMenu == "tools",
                         onDismissRequest = {
@@ -391,271 +581,97 @@ fun ChatBottomBar(
                                 lastToolsDismissTime = System.currentTimeMillis()
                             }
                         },
-                        matchTextFieldWidth = false,
-                        shape = RoundedCornerShape(16.dp)
+                        matchAnchorWidth = false,
                     ) {
-                        val isGemini = provider.equals("google", ignoreCase = true) && isModelValid
-                        if (isGemini) {
-                            DropdownMenuItem(
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Terminal, null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                        Text(stringResource(R.string.code_execution))
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        ProviderBadge("Gemini")
-                                    }
-                                },
-                                trailingIcon = {
-                                    Switch(
-                                        checked = codeExecutionEnabled,
-                                        onCheckedChange = { onCodeExecutionToggle(it) },
-                                        modifier = Modifier.scale(0.7f)
-                                    )
-                                },
-                                onClick = { onCodeExecutionToggle(!codeExecutionEnabled) }
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Language, null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                        Text(stringResource(R.string.google_search))
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        ProviderBadge("Gemini")
-                                    }
-                                },
-                                trailingIcon = {
-                                    Switch(
-                                        checked = googleSearchEnabled,
-                                        onCheckedChange = { onGoogleSearchToggle(it) },
-                                        modifier = Modifier.scale(0.7f)
-                                    )
-                                },
-                                onClick = { onGoogleSearchToggle(!googleSearchEnabled) }
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(androidx.compose.ui.res.painterResource(id = com.newoether.agora.R.drawable.neurology_24), null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Column {
-                                        Text(stringResource(R.string.thinking))
-                                        Text(
-                                            text = thinkingControlShortLabel(
-                                                thinkingEnabled,
-                                                thinkingLevel,
-                                                thinkingBudgetEnabled,
-                                                thinkingBudgetTokens
-                                            ),
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                            },
-                            trailingIcon = {
-                                Switch(
-                                    checked = thinkingEnabled,
-                                    onCheckedChange = { onThinkingToggle(it) },
-                                    modifier = Modifier.scale(0.7f)
-                                )
-                            },
-                            onClick = {
-                                haptics.action()
-                                activeMenu = null
-                                showThinkingSheet = true
-                            }
-                        )
-                        if (showWebSearch) {
-                            DropdownMenuItem(
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Language, null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                        Text(stringResource(R.string.web_search))
-                                    }
-                                },
-                                trailingIcon = {
-                                    Switch(
-                                        checked = webSearchEnabled,
-                                        onCheckedChange = { onWebSearchToggle(it) },
-                                        modifier = Modifier.scale(0.7f)
-                                    )
-                                },
-                                onClick = { onWebSearchToggle(!webSearchEnabled) }
-                            )
-                        }
-                        if (showShell) {
-                            DropdownMenuItem(
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Terminal, null, modifier = Modifier.size(18.dp))
-                                        Spacer(modifier = Modifier.width(12.dp))
-                                        Text(stringResource(R.string.shell_title))
-                                    }
-                                },
-                                trailingIcon = {
-                                    Switch(
-                                        checked = shellEnabled,
-                                        onCheckedChange = { onShellToggle(it) },
-                                        modifier = Modifier.scale(0.7f)
-                                    )
-                                },
-                                onClick = { onShellToggle(!shellEnabled) }
-                            )
-                        }
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Tune, null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Text(stringResource(R.string.advanced_settings))
-                                }
-                            },
-                            // Unlike the toggle rows, this opens a dialog — collapse the menu first.
-                            onClick = { haptics.action(); activeMenu = null; onAdvancedClick() }
+                        ComposerToolsMenuContent(
+                            activeMenuState = activeMenuState,
+                            showThinkingSheetState = showThinkingSheetState,
+                            showOpenAiServiceTierSheetState = showOpenAiServiceTierSheetState,
+                            showLowContextMode = showLowContextMode,
+                            lowContextModeEnabled = lowContextModeEnabled,
+                            onLowContextModeToggle = onLowContextModeToggle,
+                            thinkingEnabled = displayedThinkingEnabled,
+                            thinkingLevel = displayedThinkingLevel,
+                            thinkingBudgetEnabled = displayedThinkingBudgetEnabled,
+                            thinkingBudgetTokens = displayedThinkingBudgetTokens,
+                            onThinkingToggle = onThinkingToggle,
+                            thinkingCanDisable = thinkingCapability.canDisableThinking,
+                            selectedProvider = selectedProvider,
+                            isModelValid = isModelValid,
+                            codeExecutionEnabled = codeExecutionEnabled,
+                            onCodeExecutionToggle = onCodeExecutionToggle,
+                            googleSearchEnabled = googleSearchEnabled,
+                            onGoogleSearchToggle = onGoogleSearchToggle,
+                            capabilityControlsEnabled = capabilityControlsEnabled,
+                            openAiServiceTierAvailable = openAiServiceTierAvailable,
+                            openAiServiceTierEnabled = openAiServiceTierEnabled,
+                            openAiServiceTier = displayedServiceTier,
+                            onOpenAiServiceTierToggle = onOpenAiServiceTierToggle,
+                            openAiWebSearchAvailable = openAiWebSearchAvailable,
+                            openAiWebSearchEnabled = openAiWebSearchEnabled,
+                            onOpenAiWebSearchToggle = onOpenAiWebSearchToggle,
+                            showWebSearch = showWebSearch,
+                            webSearchEnabled = webSearchEnabled,
+                            onWebSearchToggle = onWebSearchToggle,
+                            showShell = showShell,
+                            shellEnabled = shellEnabled,
+                            onShellToggle = onShellToggle,
+                            canCompact = canCompact,
+                            isCompacting = isCompacting,
+                            onCompactClick = onCompactClick,
+                            onAdvancedClick = onAdvancedClick,
                         )
                     }
                 }
             }
             ComposerSendButton(
                 textFieldState = textFieldState,
-                composer = composer,
+                ownerId = composerOwnerId,
+                snapshot = composerSnapshot,
+                submissionController = submissionController,
+                submission = submission,
                 isLoading = isLoading,
                 isSwitching = isSwitching,
+                isStopping = isStopping,
                 isModelValid = isModelValid,
-                onSendMessage = onSendMessage,
+                hasQueuedSends = queuedSends.isNotEmpty(),
+                onSendQueued = onSendQueuedNow,
                 onStopGeneration = onStopGeneration,
                 onCollapse = onCollapse,
             )
-        }
-        }
-        AnimatedVisibility(
-            visible = isExpanded,
-            enter = fadeIn(tween(250)),
-            exit = fadeOut(tween(250)),
-            modifier = Modifier.align(Alignment.TopEnd).padding(end = 4.dp, top = 4.dp)
-        ) {
-            val elevatedSurface = MaterialTheme.colorScheme.surfaceColorAtElevation(2.dp)
-            IconButton(onClick = { if (!isExpandAnimating) onCollapse() }, modifier = Modifier.size(40.dp).background(Brush.radialGradient(listOf(elevatedSurface, elevatedSurface.copy(alpha = 0.5f), Color.Transparent)), CircleShape)) { Icon(painter = androidx.compose.ui.res.painterResource(id = R.drawable.collapse_all_24px), contentDescription = stringResource(R.string.collapse), modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.9f)) }
-        }
     }
 
-    if (showThinkingSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showThinkingSheet = false },
-            containerColor = MaterialTheme.colorScheme.surfaceContainer
-        ) {
-            DialogWindowEdgeToEdge()
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding()
-                    .padding(horizontal = 16.dp, vertical = 16.dp)
-            ) {
-                ThinkingControlPanel(
-                    enabled = thinkingEnabled,
-                    level = thinkingLevel,
-                    budgetEnabled = thinkingBudgetEnabled,
-                    budgetTokens = thinkingBudgetTokens,
-                    onEnabledChange = onThinkingToggle,
-                    onLevelChange = onThinkingLevelChange,
-                    onBudgetEnabledChange = onThinkingBudgetEnabledChange,
-                    onBudgetTokensChange = onThinkingBudgetTokensChange,
-                    providerName = com.newoether.agora.model.ModelId.parse(selectedModel).providerName,
-                    animateSections = true
-                )
-                Spacer(modifier = Modifier.height(24.dp))
-            }
-        }
-    }
+    ChatBottomBarOverlayHost(
+        showThinkingSheet = showThinkingSheet,
+        onDismissThinkingSheet = { showThinkingSheet = false },
+        thinkingEnabled = displayedThinkingEnabled,
+        thinkingLevel = displayedThinkingLevel,
+        thinkingCapability = thinkingCapability,
+        thinkingBudgetEnabled = displayedThinkingBudgetEnabled,
+        thinkingBudgetTokens = displayedThinkingBudgetTokens,
+        onThinkingToggle = onThinkingToggle,
+        onThinkingLevelChange = onThinkingLevelChange,
+        onThinkingBudgetEnabledChange = onThinkingBudgetEnabledChange,
+        onThinkingBudgetTokensChange = onThinkingBudgetTokensChange,
+        showOpenAiServiceTierSheet = showOpenAiServiceTierSheet,
+        openAiServiceTierAvailable = openAiServiceTierAvailable,
+        onDismissOpenAiServiceTierSheet = { showOpenAiServiceTierSheet = false },
+        openAiServiceTierEnabled = openAiServiceTierEnabled,
+        openAiServiceTier = displayedServiceTier,
+        availableServiceTiers = availableServiceTiers,
+        onOpenAiServiceTierToggle = onOpenAiServiceTierToggle,
+        onOpenAiServiceTierChange = onOpenAiServiceTierChange,
+        internalCameraPath = internalCameraPath,
+        internalCameraOwnerId = internalCameraOwnerId,
+        onInternalCameraCleared = { internalCameraPath = null; internalCameraOwnerId = null },
+        composerOwnerId = composerOwnerId,
+        composerController = composerController,
+        submissionController = submissionController,
+        composerSnapshot = composerSnapshot,
+        composer = composer,
+        pdfViewerSelection = pdfViewerSelection,
+        onTogglePdfSelection = onTogglePdfSelection,
+        onPdfPreviewSelect = onPdfPreviewSelect,
+    )
 
-    // File rejection dialog
-    if (composer.rejectedMessage != null) {
-        AlertDialog(
-            containerColor = MaterialTheme.colorScheme.surfaceContainer,
-            onDismissRequest = { composer.rejectedMessage = null },
-            title = { Text(stringResource(R.string.file_unsupported_title), fontWeight = FontWeight.Bold) },
-            text = { Text(composer.rejectedMessage!!) },
-            confirmButton = {
-                TextButton(onClick = { composer.rejectedMessage = null }) {
-                    Text(stringResource(R.string.provider_close))
-                }
-            }
-        )
-    }
-
-    // PDF page selection dialog
-    if (composer.showPdfPageDialog && composer.pendingPdfUri != null) {
-        PdfPageSelectDialog(
-            totalPages = composer.pendingPdfPages,
-            thumbnailPaths = composer.pendingPdfRenderedPaths,
-            isLoading = composer.pendingPdfIsRendering,
-            renderProgress = composer.pendingPdfRenderProgress,
-            selectedPages = pdfViewerSelection,
-            onTogglePage = { onTogglePdfSelection?.invoke(it) },
-            onSelectAll = { select -> onTogglePdfSelection?.let { toggle ->
-                (0 until composer.pendingPdfPages.coerceAtLeast(1)).forEach { i ->
-                    if ((i in pdfViewerSelection) != select) toggle(i)
-                }
-            }},
-            onPreviewPage = { index ->
-                composer.showPdfPageDialog = false
-                composer.pdfDialogHiddenForPreview = true
-                onPdfPreviewSelect?.invoke(composer.pendingPdfRenderedPaths, index)
-            },
-            onConfirm = { selection ->
-                composer.showPdfPageDialog = false
-                val rendered = composer.pendingPdfRenderedPaths
-                val sel = selection.selectedPages
-                // Keep only the selected pages; delete the rest so unselected pages don't
-                // pile up in filesDir. The kept paths are re-indexed 0..n so the attachment
-                // and the send path (which filters preRenderedPaths by selectedPages) stay in sync.
-                val keptPaths = rendered.filterIndexed { i, _ -> i in sel }
-                rendered.filterIndexedTo(mutableListOf()) { i, _ -> i !in sel }
-                    .forEach { runCatching { java.io.File(it).delete() } }
-                composer.selectedAttachments = composer.selectedAttachments + com.newoether.agora.model.SelectedAttachment(
-                    uri = composer.pendingPdfUri!!, type = "pdf",
-                    mimeType = composer.pendingPdfMimeType,
-                    fileName = composer.pendingPdfFileName,
-                    selectedPages = keptPaths.indices.toSet(),
-                    preRenderedPaths = keptPaths
-                )
-                composer.pendingPdfUri = null
-                composer.pendingPdfRenderedPaths = emptyList()
-            },
-            onDismiss = {
-                composer.showPdfPageDialog = false
-                // Cancel an in-flight render (renderAllPages deletes its own partial files on
-                // cancellation) and delete any fully-rendered pages — nothing was attached.
-                composer.pdfRenderJob?.cancel()
-                composer.pdfRenderJob = null
-                composer.pendingPdfRenderedPaths.forEach { runCatching { java.io.File(it).delete() } }
-                composer.pendingPdfUri = null
-                composer.pendingPdfRenderedPaths = emptyList()
-                composer.pendingPdfIsRendering = false
-            }
-        )
-    }
-
-    // Video slice dialog
-    if (composer.showVideoSliceDialog && composer.pendingVideoUri != null) {
-        VideoSliceDialog(
-            videoUri = composer.pendingVideoUri!!,
-            durationMs = composer.pendingVideoDurationMs,
-            onConfirm = { result ->
-                composer.showVideoSliceDialog = false
-                composer.addSlicedVideo(result.uri, result.frameCount, result.intervalMs)
-                // Process next video in queue
-                composer.processNextVideo()
-            },
-            onDismiss = {
-                composer.showVideoSliceDialog = false
-                // Process next video in queue
-                composer.processNextVideo()
-            }
-        )
-    }
 }

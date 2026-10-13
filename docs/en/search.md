@@ -1,112 +1,40 @@
 # Conversation Search
 
-Agora can search your entire conversation history — either by keyword matching or semantic (meaning-based) retrieval using embedding models.
+Open **Settings → Conversation Search** to configure keyword and semantic access to previous conversations.
+
+## Access
+
+**Access Past Conversations** is enabled by default. Disable it to prevent the model's conversation-search tool from retrieving prior conversation content. Active-memory and saved-memory permissions are configured separately.
+
+## Caching
+
+**Auto-Cache New Messages** is enabled by default. With an active embedding model, Agora indexes newly persisted searchable messages. When you switch the active embedding model, it also fills that model's missing message embeddings while Auto-Cache is enabled.
+
+When automatic caching is off, new messages remain uncached until you start caching manually. **Show Uncached Notification** is visible only in this state and controls reminders that can offer a **Cache now** action.
 
 ## Search Methods
 
-### Keyword Search
+Choose **Keyword** or **Semantic (RAG)** independently for:
 
-Fast, exact text matching. The search looks for literal occurrences of your query in message content.
+- **Model Search Method**, used by model tool calls;
+- **Manual Search Method**, used by the search bar in the conversation drawer.
 
-**Best for:**
-- Finding a specific phrase or term
-- Quick lookups when you remember exact wording
-- Zero setup — works immediately
+Semantic search cannot be selected until at least one embedding model is configured. Keyword search does not require an embedding cache.
 
-**Limitations:**
-- Misses synonyms and related concepts
-- No understanding of meaning
+## Embedding Models
 
-### Semantic Search (RAG)
+Add remote embedding endpoints or import local GGUF embedding models. One model is active at a time. Each row shows whether the model is local or remote and how many searchable messages are cached for it.
 
-Uses embedding models to find messages by **meaning**, not exact words. A query for "how to set up the database" can find messages about "Room configuration" even if the word "database" never appears.
+Use **Cache** to fill missing embeddings. A queued cache with no trustworthy total shows **Loading**. Once work starts, the row shows one generation's remaining count and determinate progress until the final count and ledger refresh completes. A failed worker keeps its last reliable remaining count and offers **Retry**. Successful completion settles directly to **Re-cache**, which asks for confirmation before rebuilding that model's cache. Changing the active model can also fill missing entries when Auto-Cache is enabled.
 
-**Best for:**
-- Finding conversations by topic or theme
-- Broad queries where you don't remember exact phrasing
-- Discovering related discussions across different conversations
+Remote embedding models receive the text that must be embedded. The index and cache metadata are stored locally.
 
-**Requirements:**
-- An embedding model must be configured (see [Embedding / RAG](embedding.md))
-- Messages must be cached (embeddings generated)
+## Advanced Retrieval
 
----
+Configure:
 
-## Setting Up
+- a context range from 4–32 conversation steps;
+- 5–30 returned results;
+- a similarity threshold from 0–1 (default 0.5).
 
-### 1. Add an Embedding Model
-
-See [Embedding / RAG](embedding.md) for detailed setup. You can use:
-- **Remote models** (OpenAI, Mistral, Voyage, Ollama, etc.)
-- **Local models** (GGUF files, fully offline)
-
-### 2. Choose Search Methods
-
-In **Settings → Conversation Search**:
-
-| Setting | Description |
-|---------|-------------|
-| **Model Search Method** | How the model searches when it calls the `search_conversations` tool |
-| **Manual Search Method** | How the search bar in the conversations drawer works |
-
-Set each to **Keyword** or **Semantic (RAG)**.
-
-### 3. Configure Search Scope
-
-| Setting | Range | Description |
-|---------|-------|-------------|
-| **Context messages per search hit** | 4–32 | How many surrounding messages to include with each match (steps: 4, 8, 12, 16, 20, 24, 28, 32) |
-| **Max search results** | 5–30 | Maximum number of matches to return (steps: 5, 10, 15, 20, 25, 30) |
-| **Similarity Threshold** | 0.0–1.0 | RAG only: minimum similarity score for a match. Higher = stricter. Default: 0.5 |
-
-### 4. Cache Messages
-
-If using RAG, tap **Cache** to generate embeddings for all existing messages. Enable **Auto-cache** to keep the index updated automatically.
-
----
-
-## Using Search
-
-### Manual Search (Search Bar)
-
-1. Open the **conversations drawer** (hamburger menu :material-menu: or swipe right)
-2. Tap the search bar at the top
-3. Type your query
-4. Results appear below — tap any result to open that conversation at the matching message
-
-### Model-Initiated Search
-
-When **Access Past Conversations** is enabled (Settings → Memory), the model can search your history autonomously:
-
-```text
-You: "What did we decide about the API design last week?"
-Model: [Searches "API design decision"]
-       "Last Tuesday, we decided to use..."
-```
-
-The search appears as a tool card in the conversation.
-
----
-
-## Similarity Threshold
-
-The **Similarity Threshold** slider (0.0 to 1.0) controls how closely a message must match to be included in RAG results:
-
-- **Low (0.3–0.5)**: More results, may include loosely related content
-- **Medium (0.5–0.7)**: Balanced — good default
-- **High (0.7–0.9)**: Fewer results, only very close matches
-
-Start with the default and adjust based on your results. If you get too many irrelevant matches, raise the threshold. If you miss relevant conversations, lower it.
-
----
-
-## Search Results Display
-
-In the conversations drawer, search results show:
-
-- **Conversation title** (or "Untitled")
-- **Matching message** — the user or model message that matched
-- **Role label** — User or Model
-- **Context messages** — surrounding messages for context
-
-Tap a result to open the conversation scrolled to the matching message.
+See [Embedding / RAG](embedding.md), [Memory & Cache](memory.md), and [Privacy & Security](privacy.md).

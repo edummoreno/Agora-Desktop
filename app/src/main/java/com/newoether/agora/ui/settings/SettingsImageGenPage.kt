@@ -24,13 +24,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.newoether.agora.R
+import com.newoether.agora.data.modelAliasDisplayName
+import com.newoether.agora.data.providerDisplayName
 import com.newoether.agora.model.ModelId
-import com.newoether.agora.model.apiModelName
 import com.newoether.agora.ui.components.providerIcon
 import com.newoether.agora.util.Constants
 import com.newoether.agora.util.noOpBringIntoView
 import com.newoether.agora.viewmodel.ChatViewModel
 import kotlinx.coroutines.delay
+import com.newoether.agora.ui.components.optionClickable
 
 /**
  * Substrings that identify text-to-image models across the major families/vendors. Aims for ~90%
@@ -86,6 +88,7 @@ fun SettingsImageGenPage(viewModel: ChatViewModel, onBack: () -> Unit) {
     val size by viewModel.settings.imageGenSize.collectAsState()
     val availableModels by viewModel.settings.availableModels.collectAsState()
     val modelAliases by viewModel.settings.modelAliases.collectAsState()
+    val customProviders by viewModel.settings.customProviders.collectAsState()
     var showModelDialog by remember { mutableStateOf(false) }
     var showAllModels by remember { mutableStateOf(false) }
     val showDocFab by viewModel.settings.showDocumentationFab.collectAsState()
@@ -119,9 +122,13 @@ fun SettingsImageGenPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                         // Only a properly prefixed "Provider:modelId" counts as a real selection;
                         // legacy/bare ids (e.g. an old "gpt-image-1") render as "no model selected".
                         val parsed = selectedModel?.takeIf { it.contains(":") }?.let { ModelId.parse(it) }
-                        val displayName = parsed?.let { modelAliases[selectedModel] ?: it.apiModelName }
+                        val displayName = selectedModel
+                            ?.takeIf { parsed != null }
+                            ?.let { modelAliasDisplayName(it, modelAliases, customProviders) }
                             ?: stringResource(R.string.image_gen_no_model)
-                        val providerName = parsed?.providerName
+                        val providerName = parsed?.let {
+                            providerDisplayName(it.providerName, customProviders)
+                        }
                         val iconRes = providerName?.let { providerIcon(it) } ?: 0
                         SettingsItem(
                             headlineContent = {
@@ -201,7 +208,7 @@ fun SettingsImageGenPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                     if (imageModels.isNotEmpty()) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().clickable { showAllModels = !showAllModels }
+                            modifier = Modifier.fillMaxWidth().optionClickable { showAllModels = !showAllModels }
                         ) {
                             Checkbox(checked = showAllModels, onCheckedChange = { showAllModels = it })
                             Text(stringResource(R.string.image_gen_show_all), style = MaterialTheme.typography.bodyMedium)
@@ -211,18 +218,22 @@ fun SettingsImageGenPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                         Text(stringResource(R.string.transcription_no_models_hint), color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else {
                         LazyColumn(modifier = Modifier.fillMaxWidth()) {
-                            items(pickList) { model ->
+                            items(pickList, key = { it }) { model ->
                             val parsed = ModelId.parse(model)
-                            val displayName = modelAliases[model] ?: parsed.apiModelName
+                            val displayName = modelAliasDisplayName(
+                                model,
+                                modelAliases,
+                                customProviders,
+                            )
                             SettingsItem(
                                 headlineContent = { Text(displayName, fontWeight = if (selectedModel == model) FontWeight.Bold else FontWeight.Normal) },
-                                supportingContent = { Text(parsed.providerName, style = MaterialTheme.typography.bodySmall) },
+                                supportingContent = { Text(providerDisplayName(parsed.providerName, customProviders), style = MaterialTheme.typography.bodySmall) },
                                 leadingContent = {
                                     RadioButton(selected = selectedModel == model, onClick = {
                                         viewModel.settings.setImageGenModel(model); showModelDialog = false
                                     })
                                 },
-                                modifier = Modifier.clickable {
+                                modifier = Modifier.optionClickable {
                                     viewModel.settings.setImageGenModel(model); showModelDialog = false
                                 }
                             )

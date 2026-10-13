@@ -13,6 +13,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.ui.res.painterResource
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
@@ -25,7 +26,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.newoether.agora.R
+import com.newoether.agora.ui.common.OpenAiServiceTierControlPanel
+import com.newoether.agora.ui.common.PersistedSliderFeedbackGate
 import com.newoether.agora.ui.common.ThinkingControlPanel
+import com.newoether.agora.ui.common.openAiServiceTierShortLabel
 import com.newoether.agora.ui.common.thinkingControlShortLabel
 import com.newoether.agora.viewmodel.ChatViewModel
 import kotlin.math.roundToInt
@@ -34,8 +38,6 @@ import java.util.Locale
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsGenerationPage(viewModel: ChatViewModel, onBack: () -> Unit) {
-    val maxContextWindow by viewModel.settings.maxContextWindow.collectAsState()
-    val visualizeContextRollout by viewModel.settings.visualizeContextRollout.collectAsState()
     val defaultTemperature by viewModel.settings.defaultTemperature.collectAsState()
     val defaultMaxTokens by viewModel.settings.defaultMaxTokens.collectAsState()
     val defaultTopP by viewModel.settings.defaultTopP.collectAsState()
@@ -45,6 +47,9 @@ fun SettingsGenerationPage(viewModel: ChatViewModel, onBack: () -> Unit) {
     val thinkingLevel by viewModel.settings.thinkingLevel.collectAsState()
     val thinkingBudgetEnabled by viewModel.settings.thinkingBudgetEnabled.collectAsState()
     val thinkingBudgetTokens by viewModel.settings.thinkingBudgetTokens.collectAsState()
+    val openAiServiceTierEnabled by
+        viewModel.settings.openAiServiceTierEnabled.collectAsState()
+    val openAiServiceTier by viewModel.settings.openAiServiceTier.collectAsState()
     val showDocFab by viewModel.settings.showDocumentationFab.collectAsState()
 
     CollapsingSettingsScaffold(
@@ -53,80 +58,7 @@ fun SettingsGenerationPage(viewModel: ChatViewModel, onBack: () -> Unit) {
         floatingActionButton = { if (showDocFab) DocumentationFab("generation.md") }
     ) {
             SettingsGroupColumn {
-                // ── Section 1: Default Context Window ──
-                SettingsGroup(
-                    title = stringResource(R.string.context_window_default),
-                    items = listOf(
-                        {
-                            val persistedContextWindow = maxContextWindow.toFloat()
-                            var contextWindowDraft by remember { mutableFloatStateOf(persistedContextWindow) }
-                            LaunchedEffect(persistedContextWindow) {
-                                contextWindowDraft = persistedContextWindow
-                            }
-                            val contextWindowValue = contextWindowDraft.toInt().coerceIn(5, 100)
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 16.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.Top
-                                ) {
-                                    Icon(
-                                        Icons.Default.Memory,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.padding(top = 2.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(16.dp))
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = stringResource(R.string.context_window),
-                                            style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Text(
-                                            text = stringResource(R.string.context_retain, contextWindowValue),
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.padding(top = 4.dp)
-                                        )
-                                        Slider(
-                                            value = contextWindowDraft,
-                                            onValueChange = { contextWindowDraft = it },
-                                            onValueChangeFinished = {
-                                                val committed = contextWindowDraft.toInt().coerceIn(5, 100)
-                                                contextWindowDraft = committed.toFloat()
-                                                if (committed != maxContextWindow) {
-                                                    viewModel.settings.setMaxContextWindow(committed)
-                                                }
-                                            },
-                                            valueRange = 5f..100f,
-                                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-                                        )
-                                        Spacer(modifier = Modifier.height(12.dp))
-                                    }
-                                }
-                            }
-                        },
-                        {
-                            SettingsItem(
-                                headlineContent = { Text(stringResource(R.string.context_visualize)) },
-                                supportingContent = { Text(stringResource(R.string.context_visualize_desc)) },
-                                leadingContent = {
-                                    Icon(Icons.Default.Visibility, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                },
-                                trailingContent = {
-                                    Switch(checked = visualizeContextRollout, onCheckedChange = { viewModel.settings.setVisualizeContextRollout(it) })
-                                },
-                                modifier = Modifier.clickable { viewModel.settings.setVisualizeContextRollout(!visualizeContextRollout) }
-                            )
-                        }
-                    )
-                )
-
-                // ── Section 2: Default Thinking ──
+                // Default Thinking
                 SettingsGroup(
                     title = stringResource(R.string.default_thinking),
                     items = listOf(
@@ -157,14 +89,68 @@ fun SettingsGenerationPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                 onBudgetTokensChange = { viewModel.settings.setThinkingBudgetTokens(it) },
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
                                 showHeader = false,
-                                providerName = null,
                                 animateSections = true
                             )
                         }
                     )
                 )
 
-                // ── Section 3: Generation Parameters ──
+                // ── Section 3: Default OpenAI service tier ──
+                SettingsGroup(
+                    title = stringResource(R.string.default_service_tier),
+                    items = listOf(
+                        {
+                            SettingsItem(
+                                headlineContent = {
+                                    Text(stringResource(R.string.openai_service_tier_title))
+                                },
+                                supportingContent = {
+                                    Text(
+                                        openAiServiceTierShortLabel(
+                                            openAiServiceTierEnabled,
+                                            openAiServiceTier,
+                                        )
+                                    )
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        Icons.Default.Speed,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                    )
+                                },
+                                trailingContent = {
+                                    Switch(
+                                        checked = openAiServiceTierEnabled,
+                                        onCheckedChange =
+                                            viewModel.settings::setOpenAiServiceTierEnabled,
+                                    )
+                                },
+                                modifier = Modifier.clickable {
+                                    viewModel.settings.setOpenAiServiceTierEnabled(
+                                        !openAiServiceTierEnabled,
+                                    )
+                                },
+                            )
+                        },
+                        {
+                            OpenAiServiceTierControlPanel(
+                                enabled = openAiServiceTierEnabled,
+                                tier = openAiServiceTier,
+                                onEnabledChange =
+                                    viewModel.settings::setOpenAiServiceTierEnabled,
+                                onTierChange = viewModel.settings::setOpenAiServiceTier,
+                                modifier = Modifier.padding(
+                                    horizontal = 16.dp,
+                                    vertical = 16.dp,
+                                ),
+                                showHeader = false,
+                            )
+                        },
+                    ),
+                )
+
+                // ── Section 4: Generation Parameters ──
                 SettingsGroup(
                     title = stringResource(R.string.generation_params),
                     items = listOf(
@@ -180,7 +166,8 @@ fun SettingsGenerationPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                             )
                         },
                         {
-                            val maxTokensPresets = intArrayOf(256, 512, 1024, 2048, 4096, 8192, 16384, 32768)
+                            val maxTokensPresets =
+                                intArrayOf(256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072)
                             GenParamSlider(
                                 label = stringResource(R.string.gen_max_tokens),
                                 desc = stringResource(R.string.gen_max_tokens_desc),
@@ -249,16 +236,20 @@ private fun GenParamSlider(
     onReset: () -> Unit
 ) {
     val defaultSliderPos = (valueRange.start + valueRange.endInclusive) / 2f
-    val persistedSliderPos = value ?: defaultSliderPos
-    var sliderPos by remember { mutableFloatStateOf(persistedSliderPos) }
-    LaunchedEffect(persistedSliderPos) {
-        sliderPos = persistedSliderPos
+    val sliderGate = remember(valueRange.start, valueRange.endInclusive) {
+        PersistedSliderFeedbackGate(
+            initialPersisted = value,
+            toDisplay = { persisted -> persisted ?: defaultSliderPos },
+        )
     }
     // Reset is reflected synchronously; only the DataStore write is async. justReset
     // flips the label to "not specified" immediately and is cleared once the async
     // [value] catches up (becomes null on reset, or a new value if the user re-sets).
     var justReset by remember { mutableStateOf(false) }
-    LaunchedEffect(value) { justReset = false }
+    LaunchedEffect(value) {
+        if (sliderGate.reconcile(value)) justReset = false
+    }
+    val sliderPos = sliderGate.displayed
     val draftChangedFromDefault = kotlin.math.abs(sliderPos - defaultSliderPos) > 0.0001f
     val hasExplicitOrDraftValue = (value != null && !justReset) || draftChangedFromDefault
     Column(
@@ -305,7 +296,11 @@ private fun GenParamSlider(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
                             modifier = Modifier.clickable {
-                                sliderPos = defaultSliderPos
+                                if (value == null) {
+                                    sliderGate.settleWithoutWrite(null, defaultSliderPos)
+                                } else {
+                                    sliderGate.expectPersisted(null, defaultSliderPos)
+                                }
                                 justReset = true
                                 onReset()
                             }
@@ -320,15 +315,19 @@ private fun GenParamSlider(
                 )
                 Slider(
                     value = sliderPos,
-                    onValueChange = { sliderPos = it },
+                    onValueChange = sliderGate::updateFromGesture,
                     onValueChangeFinished = {
                         val committed = sliderPos.coerceIn(valueRange.start, valueRange.endInclusive)
                         val shouldCommit = value != null || kotlin.math.abs(committed - defaultSliderPos) > 0.0001f
-                        sliderPos = committed
                         if (shouldCommit) {
                             if (value == null || kotlin.math.abs(value - committed) > 0.0001f) {
+                                sliderGate.expectPersisted(committed, committed)
                                 onValueChange(committed)
+                            } else {
+                                sliderGate.settleWithoutWrite(value, committed)
                             }
+                        } else {
+                            sliderGate.settleWithoutWrite(value, committed)
                         }
                     },
                     valueRange = valueRange,
@@ -353,14 +352,20 @@ private fun GenParamSlider(
 ) {
     fun toIndex(v: Int) = presets.indices.minByOrNull { kotlin.math.abs(presets[it] - v) } ?: 3
     val defaultIndex = 3.coerceIn(0, presets.lastIndex)
-    val persistedIndex = if (value != null) toIndex(value) else defaultIndex
-    var sliderPos by remember { mutableFloatStateOf(persistedIndex.toFloat()) }
-    LaunchedEffect(persistedIndex) {
-        sliderPos = persistedIndex.toFloat()
+    val sliderGate = remember(presets) {
+        PersistedSliderFeedbackGate(
+            initialPersisted = value,
+            toDisplay = { persisted ->
+                (persisted?.let(::toIndex) ?: defaultIndex).toFloat()
+            },
+        )
     }
     // Reset is reflected synchronously; only the DataStore write is async (see float variant).
     var justReset by remember { mutableStateOf(false) }
-    LaunchedEffect(value) { justReset = false }
+    LaunchedEffect(value) {
+        if (sliderGate.reconcile(value)) justReset = false
+    }
+    val sliderPos = sliderGate.displayed
     val draftIndex = sliderPos.roundToInt().coerceIn(0, presets.lastIndex)
     val hasExplicitOrDraftValue = (value != null && !justReset) || draftIndex != defaultIndex
     Column(
@@ -407,7 +412,11 @@ private fun GenParamSlider(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
                             modifier = Modifier.clickable {
-                                sliderPos = defaultIndex.toFloat()
+                                if (value == null) {
+                                    sliderGate.settleWithoutWrite(null, defaultIndex.toFloat())
+                                } else {
+                                    sliderGate.expectPersisted(null, defaultIndex.toFloat())
+                                }
                                 justReset = true
                                 onReset()
                             }
@@ -422,16 +431,23 @@ private fun GenParamSlider(
                 )
                 Slider(
                     value = sliderPos,
-                    onValueChange = { sliderPos = it },
+                    onValueChange = sliderGate::updateFromGesture,
                     onValueChangeFinished = {
                         val committedIndex = sliderPos.roundToInt().coerceIn(0, presets.lastIndex)
                         val committedValue = presets[committedIndex]
                         val shouldCommit = value != null || committedIndex != defaultIndex
-                        sliderPos = committedIndex.toFloat()
                         if (shouldCommit) {
                             if (value != committedValue) {
+                                sliderGate.expectPersisted(
+                                    committedValue,
+                                    committedIndex.toFloat(),
+                                )
                                 onValueChange(committedValue)
+                            } else {
+                                sliderGate.settleWithoutWrite(value, committedIndex.toFloat())
                             }
+                        } else {
+                            sliderGate.settleWithoutWrite(value, committedIndex.toFloat())
                         }
                     },
                     valueRange = 0f..(presets.size - 1).toFloat(),

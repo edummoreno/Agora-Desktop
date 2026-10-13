@@ -1,371 +1,466 @@
 package com.newoether.agora.ui.chat.message
 
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.background
-import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.*
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.material3.Icon
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.zIndex
-import androidx.compose.foundation.ScrollState
-import androidx.compose.foundation.MutatePriority
-import androidx.compose.ui.unit.Velocity
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.text.input.*
-import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.CloseFullscreen
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AddPhotoAlternate
-import androidx.compose.material.icons.filled.OpenInFull
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.MoreVert
-
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.filled.Terminal
-import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.SnapshotStateMap
-import androidx.compose.runtime.snapshots.SnapshotStateList
-import androidx.compose.material3.LocalContentColor
-import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.draw.scale
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import androidx.compose.ui.window.DialogWindowProvider
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.layout.layout
-import androidx.compose.ui.layout.onSizeChanged
-import kotlin.math.roundToInt
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import kotlin.math.abs
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.res.stringResource
 import com.newoether.agora.R
-import com.newoether.agora.util.noOpBringIntoView
 import com.newoether.agora.model.ChatMessage
 import com.newoether.agora.model.MessageSegment
 import com.newoether.agora.model.MessageStatus
-import com.newoether.agora.model.Participant
-import com.newoether.agora.model.ToolCallDisplayModes
-import com.newoether.agora.ui.common.LocalAgoraHaptics
-import com.newoether.agora.ui.theme.MonoFamily
-import com.newoether.agora.ui.theme.ChatType
 import com.newoether.agora.ui.components.*
-import com.mikepenz.markdown.m3.Markdown
-import com.mikepenz.markdown.m3.markdownColor
-import com.mikepenz.markdown.m3.markdownTypography
-import com.mikepenz.markdown.model.markdownAnimations
-import com.mikepenz.markdown.model.markdownPadding
-import com.mikepenz.markdown.model.ImageTransformer
-import com.mikepenz.markdown.model.MarkdownColors
-import com.mikepenz.markdown.model.MarkdownPadding
-import com.mikepenz.markdown.model.MarkdownTypography
-import com.mikepenz.markdown.model.ReferenceLinkHandlerImpl
-import com.mikepenz.markdown.model.State
-import com.mikepenz.markdown.model.rememberMarkdownState
-import com.mikepenz.markdown.compose.components.MarkdownComponents
-import com.mikepenz.markdown.compose.components.markdownComponents
-import com.mikepenz.markdown.compose.MarkdownElement
-import com.mikepenz.markdown.compose.elements.MarkdownTable
-import com.mikepenz.markdown.compose.elements.MarkdownTableHeader
-import com.mikepenz.markdown.compose.elements.MarkdownTableRow
-import org.intellij.markdown.ast.ASTNode
-import org.intellij.markdown.flavours.MarkdownFlavourDescriptor
-import org.intellij.markdown.flavours.gfm.GFMFlavourDescriptor
-import org.intellij.markdown.parser.MarkdownParser
+import com.newoether.agora.ui.motion.LocalAgoraMotionPolicy
+import com.newoether.agora.ui.motion.MotionAwareCircularProgressIndicator as CircularProgressIndicator
+import com.newoether.agora.ui.theme.ChatType
+import com.newoether.agora.util.noOpBringIntoView
 
 // ── Timeline / segment rendering (extracted from MessageItem.kt) ──────────────
 // Pure code-motion. Entry points used by MessageItem.kt are `internal`; the rest
 // stay file-private. Behavior unchanged.
 
 @Composable
-internal fun ToolDetailContent(seg: MessageSegment) {
-    val args = seg.toolArgs
-    if (!args.isNullOrBlank() && args != "{}") {
-        Text(
-            stringResource(R.string.arguments_label),
-            style = ChatType.meta,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        JsonOrPlainView(args)
-        Spacer(modifier = Modifier.height(16.dp))
-    }
+private fun StartAnchoredHorizontalOverflowHost(
+    content: @Composable BoxScope.() -> Unit,
+) = Box(
+    modifier = Modifier
+        .fillMaxWidth()
+        .wrapContentWidth(Alignment.Start, unbounded = true),
+    contentAlignment = Alignment.TopStart,
+    content = content,
+)
 
-    Text(
-        stringResource(R.string.result_label),
-        style = ChatType.meta,
-        color = MaterialTheme.colorScheme.onSurfaceVariant
-    )
-    Spacer(modifier = Modifier.height(4.dp))
-    val result = seg.toolResult
-    if (result != null && result.isNotEmpty()) {
-        JsonOrPlainView(result)
-    } else {
-        Text(
-            text = stringResource(R.string.tool_calling_ellipsis),
-            style = ChatType.meta,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
+internal enum class CompactSegmentIcon {
+    LOADING,
+    THINKING,
+    TOOL,
+    IMAGE,
 }
 
-@Composable
-internal fun segmentDetailTitle(
-    seg: MessageSegment,
-    detailSegments: List<MessageSegment>,
-    detailIndex: Int
-): String {
-    return when (seg.type) {
-        "tool" -> toolDisplayName(seg.toolName)
-        "transcription" -> transcriptionLabel(detailSegments, detailIndex)
-        else -> stringResource(R.string.tool_thinking)
-    }
-}
+internal fun compactSegmentShowsLoading(
+    generationActive: Boolean,
+    isCurrentCard: Boolean,
+): Boolean = generationActive && isCurrentCard
 
-@Composable
-internal fun thoughtDurationTitle(thoughtMs: Long, toolCount: Int): String {
-    val seconds = (thoughtMs / 1000).toInt()
-    return if (toolCount > 0) {
-        if (seconds >= 60) {
-            stringResource(R.string.thought_for_minutes_called_tools, seconds / 60, seconds % 60, toolCount)
-        } else {
-            stringResource(R.string.thought_for_seconds_called_tools, seconds, toolCount)
-        }
-    } else {
-        if (seconds >= 60) {
-            stringResource(R.string.thought_for_minutes, seconds / 60, seconds % 60)
-        } else {
-            stringResource(R.string.thought_for_seconds, seconds)
-        }
-    }
-}
+/** Only the current card of an active generation shows live titles. */
+internal fun compactSegmentUsesLiveStatus(
+    generationActive: Boolean,
+    isCurrentCard: Boolean,
+    useLiveStatus: Boolean,
+): Boolean = generationActive && isCurrentCard && useLiveStatus
 
-@Composable
-internal fun compactSegmentTitle(
+/** The collapsed header icon; [collapsedTitle] is the title the header shows. */
+internal fun compactSegmentIcon(
     segs: List<MessageSegment>,
     message: ChatMessage,
-    useLiveStatus: Boolean
-): String {
-    val lastSeg = segs.lastOrNull() ?: return ""
-    val isLastTool = lastSeg.type == "tool"
-    val isToolInProgress = isLastTool && lastSeg.toolResult == null
-    val isThinking = useLiveStatus && message.status == MessageStatus.THINKING
-    val isToolCalling = useLiveStatus && message.status == MessageStatus.TOOL_CALLING
-    val isTranscribing = useLiveStatus && message.status == MessageStatus.TRANSCRIBING
-    val toolCount = segs.count { it.type == "tool" && it.toolResult != null }
-    val thoughtMs = thoughtDurationMs(segs)
+    generationActive: Boolean,
+    isCurrentCard: Boolean,
+    cardUsesLiveStatus: Boolean,
+    collapsedTitle: String,
+): CompactSegmentIcon {
+    val isThinking = cardUsesLiveStatus &&
+        message.status == MessageStatus.THINKING &&
+        segs.any { it.type == "thought" }
+    val isTranscribing = cardUsesLiveStatus && message.status == MessageStatus.TRANSCRIBING
+    val toolCount = segs.count { it.type == "tool" }
+    val thoughtMs = thoughtDurationMs(segs, fallbackMs = message.thoughtTimeMs)
     val hasThought = thoughtMs != null && thoughtMs > 0
     return when {
-        isThinking -> message.thoughtTitle ?: stringResource(R.string.thinking_ellipsis)
-        isTranscribing -> message.thoughtTitle ?: stringResource(R.string.transcription_ellipsis)
-        isToolCalling || isToolInProgress -> toolDisplayName(lastSeg.toolName)
-        hasThought -> thoughtDurationTitle(thoughtMs!!, toolCount)
-        toolCount > 0 -> stringResource(R.string.called_n_tools, toolCount)
-        message.thoughtTitle != null -> message.thoughtTitle
-        segs.any { it.type == "transcription" } -> "Image Transcription"
-        else -> stringResource(R.string.thinking_complete)
+        compactSegmentShowsLoading(generationActive, isCurrentCard) -> CompactSegmentIcon.LOADING
+        !isThinking && !hasThought && toolCount > 0 -> CompactSegmentIcon.TOOL
+        isTranscribing || collapsedTitle == "Image Transcription" -> CompactSegmentIcon.IMAGE
+        else -> CompactSegmentIcon.THINKING
     }
 }
 
 @Composable
-private fun CompactSegmentBlock(
+internal fun CompactSegmentBlock(
     segs: List<MessageSegment>,
     segmentIndices: List<Int>,
     message: ChatMessage,
     isStreaming: Boolean,
     useLiveStatus: Boolean,
+    generationActive: Boolean,
+    isCurrentCard: Boolean,
     expandedStates: SnapshotStateMap<String, Boolean>,
     expansionKey: String,
+    cardAppearanceKey: String = "$expansionKey:card",
+    segmentAppearanceRegistry: SegmentAppearanceRegistry,
+    autoExpansionController: GroupedSegmentAutoExpansionController? = null,
+    autoExpansionEnabled: Boolean = false,
+    autoExpansionActive: Boolean = false,
+    collapseForImageBoundary: Boolean = false,
     modifier: Modifier = Modifier,
     topPaddingExtra: Dp = 0.dp,
     bottomPaddingExtra: Dp = 6.dp,
     onSegmentClick: (Int) -> Unit,
+    onHeaderClick: (() -> Unit)? = null,
+    opensDetailSheet: Boolean = false,
+    onExpansionStarted: (String) -> Unit = {},
+    onExpansionSettled: (String) -> Unit = {},
     onBlockHeightChanged: (Int) -> Unit = {}
 ) {
     if (segs.isEmpty()) return
-    val isExpanded by remember(expansionKey) {
-        derivedStateOf { expandedStates[expansionKey] ?: false }
-    }
-    var contentMaxHeightPx by remember(expansionKey) { mutableIntStateOf(0) }
-    LaunchedEffect(isStreaming, expansionKey) {
-        if (isStreaming) {
-            contentMaxHeightPx = 0
+    val allowSpatialTransitions = LocalAgoraMotionPolicy.current.allowSpatialTransitions
+    val containsToolSummary = segs.any { it.type == "tool" }
+    val animateCardAppearance = rememberSegmentAppearance(
+        registry = segmentAppearanceRegistry,
+        animationKey = cardAppearanceKey,
+        isStreaming = isStreaming,
+    )
+    val cardAppearanceModifier = generationLifecycleAppearanceModifier(
+        animationKey = cardAppearanceKey,
+        animate = animateCardAppearance,
+        durationMillis = SEGMENT_ENTER_DURATION_MS,
+        initialScale = SEGMENT_ENTER_INITIAL_SCALE,
+    )
+    val collapseImageBoundaryOnAppearance =
+        autoExpansionController?.shouldCollapseForImageBoundary(
+            key = expansionKey,
+            hasImageBoundary = collapseForImageBoundary,
+        ) == true
+    val initiallyAutoExpanded =
+        autoExpansionController?.shouldPresentInitiallyExpanded(
+            key = expansionKey,
+            isActive = autoExpansionActive,
+            enabled = autoExpansionEnabled,
+        ) == true
+    val isExpanded = groupedSegmentExpandedState(
+        persistedExpanded = expandedStates[expansionKey],
+        initiallyAutoExpanded = initiallyAutoExpanded,
+        collapseForImageBoundary = collapseImageBoundaryOnAppearance,
+    )
+    val currentOnExpansionStarted by rememberUpdatedState(onExpansionStarted)
+    val currentOnExpansionSettled by rememberUpdatedState(onExpansionSettled)
+    LaunchedEffect(
+        autoExpansionController,
+        expansionKey,
+        autoExpansionEnabled,
+        autoExpansionActive,
+        collapseImageBoundaryOnAppearance,
+        collapseForImageBoundary,
+    ) {
+        if (collapseImageBoundaryOnAppearance) {
+            val claimed = autoExpansionController.claimImageBoundaryCollapse(
+                key = expansionKey,
+                hasImageBoundary = collapseForImageBoundary,
+            ) == true
+            if (claimed && expandedStates[expansionKey] != false) {
+                expandedStates[expansionKey] = false
+            }
+            return@LaunchedEffect
+        }
+        val targetExpanded = when (
+            autoExpansionController?.update(
+                key = expansionKey,
+                isActive = autoExpansionActive,
+                enabled = autoExpansionEnabled,
+            )
+        ) {
+            GroupedSegmentAutoExpansionAction.EXPAND -> true
+            GroupedSegmentAutoExpansionAction.COLLAPSE -> false
+            GroupedSegmentAutoExpansionAction.NONE, null -> null
+        }
+        if (
+            targetExpanded != null &&
+            (expandedStates[expansionKey] ?: false) != targetExpanded
+        ) {
+            val alreadyPresentedAtTarget =
+                targetExpanded && initiallyAutoExpanded
+            if (!alreadyPresentedAtTarget) {
+                currentOnExpansionStarted(expansionKey)
+            }
+            expandedStates[expansionKey] = targetExpanded
         }
     }
-
-    val lastSeg = segs.last()
-    val isLastTool = lastSeg.type == "tool"
-    val isToolInProgress = isLastTool && lastSeg.toolResult == null
-    val isThinking = useLiveStatus && message.status == MessageStatus.THINKING
-    val isToolCalling = useLiveStatus && message.status == MessageStatus.TOOL_CALLING
-    val isTranscribing = useLiveStatus && message.status == MessageStatus.TRANSCRIBING
-    val toolCount = segs.count { it.type == "tool" && it.toolResult != null }
-    val thoughtMs = thoughtDurationMs(segs)
-    val hasThought = thoughtMs != null && thoughtMs > 0
-    val collapsedTitle = compactSegmentTitle(segs, message, useLiveStatus)
-    val mergedBottomPadding by animateDpAsState(
-        targetValue = if (isExpanded) 12.dp else 4.dp,
-        animationSpec = tween(500),
-        label = "compactSegmentPad"
+    val cardUsesLiveStatus = compactSegmentUsesLiveStatus(generationActive, isCurrentCard, useLiveStatus)
+    val collapsedTitle = compactSegmentDisplayTitle(
+        segs = segs,
+        message = message,
+        useLiveStatus = cardUsesLiveStatus,
     )
-
-    Surface(
-        tonalElevation = 2.dp,
-        shape = RoundedCornerShape(18.dp),
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(top = 8.dp + topPaddingExtra, bottom = mergedBottomPadding + bottomPaddingExtra)
-            .noOpBringIntoView()
-            .onSizeChanged { onBlockHeightChanged(it.height) }
+    val collapsedIcon = compactSegmentIcon(
+        segs = segs,
+        message = message,
+        generationActive = generationActive,
+        isCurrentCard = isCurrentCard,
+        cardUsesLiveStatus = cardUsesLiveStatus,
+        collapsedTitle = collapsedTitle,
+    )
+    val expansionTransition = updateTransition(
+        targetState = isExpanded,
+        label = "compactSegmentExpansion",
+    )
+    val mergedBottomPadding = if (collapseImageBoundaryOnAppearance) {
+        GENERATED_IMAGE_BOUNDARY_GAP_DP.dp
+    } else if (allowSpatialTransitions) {
+        val animatedPadding by expansionTransition.animateDp(
+            transitionSpec = { tween(400) },
+            label = "compactSegmentPad",
+        ) { expanded ->
+            if (expanded) {
+                12.dp
+            } else if (collapseForImageBoundary) {
+                GENERATED_IMAGE_BOUNDARY_GAP_DP.dp
+            } else {
+                4.dp
+            }
+        }
+        animatedPadding
+    } else if (
+        retainExpandedLayoutDuringFade(
+            currentExpanded = expansionTransition.currentState,
+            targetExpanded = expansionTransition.targetState,
+        )
     ) {
-        Column {
+        12.dp
+    } else if (collapseForImageBoundary) {
+        GENERATED_IMAGE_BOUNDARY_GAP_DP.dp
+    } else {
+        4.dp
+    }
+    LaunchedEffect(expansionTransition, expansionKey) {
+        var observedRunning = false
+        snapshotFlow { expansionTransition.isRunning }.collect { running ->
+            if (running) {
+                observedRunning = true
+            } else if (observedRunning) {
+                observedRunning = false
+                currentOnExpansionSettled(expansionKey)
+            }
+        }
+    }
+    LaunchedEffect(isExpanded, allowSpatialTransitions, expansionKey) {
+        if (!allowSpatialTransitions) {
+            currentOnExpansionSettled(expansionKey)
+        }
+    }
+    DisposableEffect(expansionKey) {
+        onDispose { currentOnExpansionSettled(expansionKey) }
+    }
+
+    val compactTitleStyle = ChatType.body.copy(
+        fontSize = 13.sp,
+        lineHeight = 22.sp,
+        fontWeight = FontWeight.SemiBold,
+    )
+    val textMeasurer = rememberTextMeasurer()
+    val density = LocalDensity.current
+    val useExpandedHeaderLayout =
+        !collapseImageBoundaryOnAppearance &&
+            retainExpandedLayoutDuringFade(
+                currentExpanded = expansionTransition.currentState,
+                targetExpanded = expansionTransition.targetState,
+            )
+    BoxWithConstraints(
+        modifier = modifier.fillMaxWidth(),
+        contentAlignment = Alignment.TopStart,
+    ) {
+        val titleWidth = with(density) {
+            textMeasurer.measure(
+                text = AnnotatedString(collapsedTitle),
+                style = compactTitleStyle,
+                softWrap = false,
+                maxLines = 1,
+            ).size.width.toDp()
+        }
+        val collapsedHeaderWidth =
+            12.dp + 18.dp + 8.dp + titleWidth + 4.dp + 18.dp + 12.dp +
+                THINKING_COLLAPSED_WIDTH_ALLOWANCE_DP.dp
+        val availableWidth = if (maxWidth.value.isFinite()) {
+            maxWidth + (AUXILIARY_CARD_START_EXTENSION_DP * 2).dp
+        } else {
+            collapsedHeaderWidth
+        }
+        val collapsedCardWidth = minOf(collapsedHeaderWidth, availableWidth)
+        val cardWidth by expansionTransition.animateDp(
+            transitionSpec = {
+                if (collapseImageBoundaryOnAppearance || !allowSpatialTransitions) {
+                    snap()
+                } else {
+                    tween(
+                        durationMillis = 400,
+                        easing = LinearOutSlowInEasing,
+                    )
+                }
+            },
+            label = "compactSegmentWidth",
+        ) { expanded ->
+            if (expanded) availableWidth else collapsedCardWidth
+        }
+        val contentLayoutWidth =
+            if (useExpandedHeaderLayout) availableWidth else collapsedCardWidth
+        val targetDisclosureRotation = when {
+            opensDetailSheet -> -90f
+            isExpanded -> 180f
+            else -> 0f
+        }
+        val disclosureRotation by animateFloatAsState(
+            targetValue = targetDisclosureRotation,
+            animationSpec = if (
+                allowSpatialTransitions && !collapseImageBoundaryOnAppearance
+            ) {
+                tween(durationMillis = 400, easing = LinearOutSlowInEasing)
+            } else {
+                snap()
+            },
+            label = "compactSegmentDisclosureRotation",
+        )
+
+        StartAnchoredHorizontalOverflowHost {
+            Surface(
+                tonalElevation = 2.dp,
+                shape = RoundedCornerShape(18.dp),
+            modifier = Modifier
+                .offset(x = (-AUXILIARY_CARD_START_EXTENSION_DP).dp)
+                .width(cardWidth)
+                .padding(
+                    top = 8.dp + topPaddingExtra,
+                    bottom = mergedBottomPadding + bottomPaddingExtra,
+                )
+                .then(cardAppearanceModifier)
+                .noOpBringIntoView()
+                .onSizeChanged { onBlockHeightChanged(it.height) },
+        ) {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier
+                        .wrapContentSize(Alignment.TopStart, unbounded = true)
+                        .requiredWidth(contentLayoutWidth),
+                ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(18.dp))
-                    .clickable { expandedStates[expansionKey] = !isExpanded }
-                    .padding(10.dp)
+                    .clickable {
+                        if (onHeaderClick != null) {
+                            onHeaderClick()
+                        } else {
+                            currentOnExpansionStarted(expansionKey)
+                            expandedStates[expansionKey] = !isExpanded
+                        }
+                    }
+                    .padding(start = 12.dp, top = 10.dp, bottom = 10.dp)
             ) {
-                if (isToolCalling || isToolInProgress) {
-                    Icon(Icons.Default.Build, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
-                } else if (!isThinking && !hasThought && toolCount > 0) {
-                    Icon(Icons.Default.Build, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
-                } else if (isTranscribing || collapsedTitle == "Image Transcription") {
-                    Icon(Icons.Filled.Image, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
-                } else {
-                    Icon(androidx.compose.ui.res.painterResource(id = com.newoether.agora.R.drawable.neurology_24), null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
+                Crossfade(
+                    targetState = collapsedIcon,
+                    animationSpec = tween(
+                        durationMillis = STATUS_CROSSFADE_DURATION_MS,
+                        easing = LinearEasing,
+                    ),
+                    label = "compactSegmentIcon:$expansionKey",
+                    modifier = Modifier.size(18.dp),
+                ) { icon ->
+                    when (icon) {
+                        CompactSegmentIcon.LOADING -> CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                            strokeWidth = 2.dp,
+                        )
+                        CompactSegmentIcon.TOOL -> Icon(
+                            Icons.Default.Build,
+                            null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                        )
+                        CompactSegmentIcon.IMAGE -> Icon(
+                            Icons.Filled.Image,
+                            null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                        )
+                        CompactSegmentIcon.THINKING -> Icon(
+                            androidx.compose.ui.res.painterResource(
+                                id = com.newoether.agora.R.drawable.neurology_24,
+                            ),
+                            null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                        )
+                    }
                 }
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    collapsedTitle,
-                    style = ChatType.thoughtTitle,
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Icon(
-                    if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                    null,
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                )
+                Crossfade(
+                    targetState = collapsedTitle,
+                    animationSpec = tween(
+                        durationMillis = STATUS_CROSSFADE_DURATION_MS,
+                        easing = LinearEasing,
+                    ),
+                    label = "compactSegmentTitle:$expansionKey",
+                    modifier = Modifier.weight(1f),
+                ) { title ->
+                    Text(
+                        text = title,
+                        style = compactTitleStyle,
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(modifier = Modifier.width(26.dp))
             }
-            AnimatedVisibility(
-                visible = isExpanded,
-                enter = fadeIn(tween(400)) + expandVertically(tween(400)),
-                exit = fadeOut(tween(400)) + shrinkVertically(tween(400))
+            Box(modifier = Modifier.fillMaxWidth()) {
+            expansionTransition.AnimatedVisibility(
+                visible = { it },
+                enter = when {
+                    collapseImageBoundaryOnAppearance -> EnterTransition.None
+                    containsToolSummary && allowSpatialTransitions -> expandVertically(tween(400))
+                    containsToolSummary -> EnterTransition.None
+                    allowSpatialTransitions -> fadeIn(tween(400)) + expandVertically(tween(400))
+                    else -> fadeIn(tween(400))
+                },
+                exit = when {
+                    collapseImageBoundaryOnAppearance -> ExitTransition.None
+                    containsToolSummary && allowSpatialTransitions -> shrinkVertically(tween(400))
+                    containsToolSummary -> ExitTransition.None
+                    allowSpatialTransitions -> fadeOut(tween(400)) + shrinkVertically(tween(400))
+                    else -> fadeOut(tween(400))
+                },
             ) {
-                Column(
-                    modifier = Modifier
-                        .then(
-                            if (contentMaxHeightPx > 0)
-                                Modifier.heightIn(min = with(LocalDensity.current) { contentMaxHeightPx.toDp() })
-                            else Modifier
-                        )
-                        .onSizeChanged { size ->
-                            if (isStreaming) {
-                                contentMaxHeightPx = maxOf(contentMaxHeightPx, size.height)
-                            }
-                        }
-                ) {
+                Column {
                     Spacer(modifier = Modifier.height(2.dp))
-                    // Animate only items appended WHILE expanded during streaming — not the
-                    // items already present when the block is first expanded, nor on history.
-                    val seenSegIdx = remember(expansionKey) { mutableSetOf<Int>() }
-                    var seenSegInit by remember(expansionKey) { mutableStateOf(false) }
-                    val newSegIdx = if (isStreaming && seenSegInit)
-                        segs.indices.filterNotTo(linkedSetOf()) { it in seenSegIdx } else emptySet()
-                    SideEffect {
-                        segs.indices.forEach { seenSegIdx.add(it) }
-                        if (!seenSegInit) seenSegInit = true
-                    }
                     segs.forEachIndexed { idx, seg ->
+                      val detailIndex = segmentIndices.getOrElse(idx) { idx }
                       AnimatedTimelineBlockAppearance(
-                        animationKey = "$expansionKey:seg:$idx",
-                        animate = idx in newSegIdx
+                        animationKey = detailSegmentAppearanceKey(
+                            message.id,
+                            detailIndex,
+                            seg,
+                        ),
+                        appearanceRegistry = segmentAppearanceRegistry,
+                        isStreaming = isStreaming,
+                        forceOpaque = seg.type == "tool",
                       ) {
                        Column {
                         if ((seg.type == "thought" && seg.content.isNotBlank()) || seg.type == "transcription") {
@@ -373,7 +468,9 @@ private fun CompactSegmentBlock(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(18.dp))
-                                    .clickable { onSegmentClick(segmentIndices.getOrElse(idx) { idx }) }
+                                    .clickable {
+                                        onSegmentClick(segmentIndices.getOrElse(idx) { idx })
+                                    }
                                     .padding(horizontal = 10.dp, vertical = 8.dp)
                             ) {
                                 Text(
@@ -383,17 +480,23 @@ private fun CompactSegmentBlock(
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 if (seg.content.isNotBlank()) {
-                                    val flat = seg.content.replace('\n', ' ')
-                                    val preview = if (isStreaming && useLiveStatus && idx == segs.lastIndex) {
-                                        if (flat.length > 60) "…${flat.takeLast(60)}" else flat
-                                    } else flat
-                                    Text(
-                                        text = preview,
-                                        style = ChatType.metaNormal,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
+                                    if (seg.type == "thought") {
+                                        StreamingThoughtPreviewText(
+                                            content = seg.content,
+                                            streaming =
+                                                isStreaming &&
+                                                    useLiveStatus &&
+                                                    idx == segs.lastIndex,
+                                        )
+                                    } else {
+                                        StreamingMutedText(
+                                            text = seg.content.replace('\n', ' '),
+                                            streaming =
+                                                isStreaming &&
+                                                    useLiveStatus &&
+                                                    idx == segs.lastIndex,
+                                        )
+                                    }
                                 } else {
                                     Text(
                                         text = "Image transcription is empty.",
@@ -407,26 +510,31 @@ private fun CompactSegmentBlock(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(18.dp))
-                                    .clickable { onSegmentClick(segmentIndices.getOrElse(idx) { idx }) }
+                                    .clickable {
+                                        onSegmentClick(segmentIndices.getOrElse(idx) { idx })
+                                    }
                                     .padding(horizontal = 10.dp, vertical = 8.dp)
                             ) {
                                 Text(
-                                    toolDisplayName(seg.toolName),
+                                    toolDisplayName(seg),
                                     style = ChatType.meta,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontWeight = FontWeight.SemiBold
                                 )
-                                Text(
-                                    text = toolSummary(seg),
-                                    style = ChatType.metaNormal,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                                val presentation = ToolPresentationResolver.resolve(seg)
+                                ToolSummaryText(
+                                    presentation = presentation,
+                                    streaming =
+                                        isStreaming &&
+                                            useLiveStatus &&
+                                            idx == segs.lastIndex,
                                 )
                             }
                         }
                         if (idx < segs.lastIndex) {
                             HorizontalDivider(
                                 modifier = Modifier.padding(vertical = 2.dp),
-                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f)
+                                color = Color.Transparent,
                             )
                         }
                        }
@@ -434,169 +542,140 @@ private fun CompactSegmentBlock(
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-internal fun TimelineSegmentsContent(
-    segments: List<MessageSegment>,
-    detailSegments: List<MessageSegment>,
-    message: ChatMessage,
-    isStreaming: Boolean,
-    groupAdjacentBlocks: Boolean,
-    expandedStates: SnapshotStateMap<String, Boolean>,
-    renderContext: ChatMarkdownRenderContext,
-    animatedBlockKeys: Set<String>,
-    onSegmentClick: (List<Int>) -> Unit
-) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        var detailIndex = 0
-        var index = 0
-        var groupedBlockIndex = 0
-        var previousVisibleWasAnswer = false
-        while (index < segments.size) {
-            val seg = segments[index]
-            when (seg.type) {
-                "answer" -> {
-                    if (seg.content.isNotBlank()) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = if (index == 0) 0.dp else 6.dp)
-                        ) {
-                            SelectionContainer(modifier = Modifier.noOpBringIntoView()) {
-                                RecomposeSafeMarkdown(
-                                    content = seg.content,
-                                    isStreaming = isStreaming && index == segments.lastIndex,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) { text ->
-                                    MarkdownTextContent(text = text, renderContext = renderContext)
-                                }
-                            }
-                            if (isStreaming) {
-                                Box(
-                                    modifier = Modifier
-                                        .matchParentSize()
-                                        .pointerInput(Unit) {
-                                            detectTapGestures(onLongPress = { })
-                                        }
-                                )
-                            }
-                        }
-                        previousVisibleWasAnswer = true
-                    }
-                    index++
+            }
                 }
-                "thought", "tool", "transcription" -> {
-                    if (groupAdjacentBlocks) {
-                        val blockSegments = mutableListOf<MessageSegment>()
-                        val blockDetailIndices = mutableListOf<Int>()
-                        var blockEnd = index
-                        while (blockEnd < segments.size && !segments[blockEnd].isVisibleAnswerSegment()) {
-                            val blockSeg = segments[blockEnd]
-                            if (blockSeg.isInfoSegment()) {
-                                blockSegments.add(blockSeg)
-                                blockDetailIndices.add(detailIndex)
-                                detailIndex++
-                            }
-                            blockEnd++
-                        }
-                        val expansionKey = "${message.id}:group:${blockDetailIndices.firstOrNull() ?: index}"
-                        val blockTopPaddingExtra = if (groupedBlockIndex > 0) 8.dp else 0.dp
-                        val blockContent: @Composable () -> Unit = {
-                            CompactSegmentBlock(
-                                segs = blockSegments,
-                                segmentIndices = blockDetailIndices,
-                                message = message,
-                                isStreaming = isStreaming,
-                                useLiveStatus = isStreaming && blockDetailIndices.lastOrNull() == detailSegments.lastIndex,
-                                expandedStates = expandedStates,
-                                expansionKey = expansionKey,
-                                topPaddingExtra = blockTopPaddingExtra,
-                                bottomPaddingExtra = 0.dp,
-                                onSegmentClick = { detailIndex -> onSegmentClick(listOf(detailIndex)) }
-                            )
-                        }
-                        AnimatedTimelineBlockAppearance(
-                            animationKey = expansionKey,
-                            animate = expansionKey in animatedBlockKeys
-                        ) {
-                            blockContent()
-                        }
-                        groupedBlockIndex++
-                        previousVisibleWasAnswer = false
-                        index = blockEnd
-                    } else {
-                        val currentDetailIndex = detailIndex
-                        detailIndex++
-                        val cardTopPaddingExtra = if (previousVisibleWasAnswer) 8.dp else 0.dp
-                        val cardContent: @Composable () -> Unit = {
-                            TimelineInfoSegmentCard(
-                                seg = seg,
-                                detailSegments = detailSegments,
-                                detailIndex = currentDetailIndex,
-                                isStreaming = isStreaming && index == segments.lastIndex,
-                                topPaddingExtra = cardTopPaddingExtra,
-                                onClick = { onSegmentClick(listOf(currentDetailIndex)) }
-                            )
-                        }
-                        val timelineKey = "${message.id}:timeline:$currentDetailIndex"
-                        AnimatedTimelineBlockAppearance(
-                            animationKey = timelineKey,
-                            animate = timelineKey in animatedBlockKeys
-                        ) {
-                            cardContent()
-                        }
-                        previousVisibleWasAnswer = false
-                        index++
-                    }
-                }
-                else -> {
-                    index++
-                }
+                Icon(
+                    Icons.Default.KeyboardArrowDown,
+                    null,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 10.dp, end = 8.dp)
+                        .size(18.dp)
+                        .graphicsLayer { rotationZ = disclosureRotation },
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                )
             }
         }
+        }
     }
 }
 
+/**
+ * Reduced Motion keeps expanded layout space for the whole content fade.
+ *
+ * On expansion the target state reserves the final layout immediately. On collapse the current
+ * state retains that layout until the exit fade finishes. AnimatedVisibility then removes the
+ * content in the same transition settlement that releases the card's external spacing.
+ */
+internal fun retainExpandedLayoutDuringFade(
+    currentExpanded: Boolean,
+    targetExpanded: Boolean,
+): Boolean = currentExpanded || targetExpanded
+
+internal fun timelineInfoTopPaddingExtra(hasVisibleMessageAbove: Boolean): Dp =
+    if (hasVisibleMessageAbove) 8.dp else 0.dp
+
+internal const val SEGMENT_GROUP_GAP_DP = 2
+private const val GENERATED_IMAGE_BOUNDARY_GAP_DP = 8
+
+private fun segmentGroupTopPadding(
+    position: SegmentGroupPosition,
+    topPaddingExtra: Dp,
+): Dp = when (position) {
+    SegmentGroupPosition.MIDDLE, SegmentGroupPosition.LAST -> SEGMENT_GROUP_GAP_DP.dp
+    else -> 8.dp + topPaddingExtra
+}
+
+private fun segmentGroupBottomPadding(position: SegmentGroupPosition): Dp =
+    if (position == SegmentGroupPosition.SINGLE || position == SegmentGroupPosition.LAST) {
+        6.dp
+    } else {
+        0.dp
+    }
+
 @Composable
-private fun TimelineInfoSegmentCard(
+internal fun TimelineInfoSegmentCard(
     seg: MessageSegment,
     detailSegments: List<MessageSegment>,
     detailIndex: Int,
-    isStreaming: Boolean,
+    isStreamingContent: Boolean,
+    animateAppearance: Boolean,
     topPaddingExtra: Dp = 0.dp,
+    groupPosition: SegmentGroupPosition = SegmentGroupPosition.SINGLE,
+    endsAtGeneratedImageBoundary: Boolean = false,
+    neutralPalette: Boolean = false,
+    extendIntoMessageInsets: Boolean = false,
+    cardAnimationKey: String,
+    segmentAppearanceRegistry: SegmentAppearanceRegistry,
     onClick: () -> Unit
 ) {
-    Surface(
-        tonalElevation = 2.dp,
-        shape = RoundedCornerShape(18.dp),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 8.dp + topPaddingExtra, bottom = 6.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .clickable { onClick() }
+    val animateCardAppearance = rememberSegmentAppearance(
+        registry = segmentAppearanceRegistry,
+        animationKey = cardAnimationKey,
+        isStreaming = animateAppearance,
+    )
+    val groupShape = rememberAnimatedSegmentGroupShape(groupPosition)
+    val cardColor = if (neutralPalette) {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)
+    } else {
+        MaterialTheme.colorScheme.surface
+    }
+    val iconTint = if (neutralPalette) MaterialTheme.colorScheme.primary
+    else MaterialTheme.colorScheme.primary.copy(alpha = 0.7f)
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val cardAppearanceModifier = generationLifecycleAppearanceModifier(
+            animationKey = cardAnimationKey,
+            animate = animateCardAppearance,
+            durationMillis = SEGMENT_ENTER_DURATION_MS,
+            initialScale = SEGMENT_ENTER_INITIAL_SCALE,
+            forceOpaque = seg.type == "tool",
+        )
+        val requestedCardWidth = if (extendIntoMessageInsets) {
+            maxWidth + (AUXILIARY_CARD_START_EXTENSION_DP * 2).dp
+        } else {
+            maxWidth
+        }
+        val requestedCardOffset =
+            if (extendIntoMessageInsets) (-AUXILIARY_CARD_START_EXTENSION_DP).dp else 0.dp
+        StartAnchoredHorizontalOverflowHost {
+            Surface(
+                tonalElevation = if (neutralPalette) 1.dp else 2.dp,
+                color = cardColor,
+                shape = groupShape,
+                modifier = Modifier
+                    .offset(x = requestedCardOffset)
+                    .width(requestedCardWidth)
+            .padding(
+                top = segmentGroupTopPadding(groupPosition, topPaddingExtra),
+                bottom = if (endsAtGeneratedImageBoundary) {
+                    GENERATED_IMAGE_BOUNDARY_GAP_DP.dp
+                } else segmentGroupBottomPadding(groupPosition),
+            )
+            .then(cardAppearanceModifier)
+            .clip(groupShape)
+            .clickable {
+                onClick()
+            }
             .noOpBringIntoView()
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp)
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp)
         ) {
             val isTool = seg.type == "tool"
             val isTranscription = seg.type == "transcription"
             if (isTool) {
-                Icon(Icons.Default.Build, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
+                Icon(Icons.Default.Build, null, modifier = Modifier.size(16.dp), tint = iconTint)
             } else if (isTranscription) {
-                Icon(Icons.Filled.Image, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
+                Icon(Icons.Filled.Image, null, modifier = Modifier.size(16.dp), tint = iconTint)
             } else {
-                Icon(androidx.compose.ui.res.painterResource(id = com.newoether.agora.R.drawable.neurology_24), null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
+                Icon(androidx.compose.ui.res.painterResource(id = com.newoether.agora.R.drawable.neurology_24), null, modifier = Modifier.size(16.dp), tint = iconTint)
             }
             Spacer(modifier = Modifier.width(8.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = when (seg.type) {
-                        "tool" -> toolDisplayName(seg.toolName)
+                        "tool" -> toolDisplayName(seg)
                         "transcription" -> transcriptionLabel(detailSegments, detailIndex)
                         else -> stringResource(R.string.tool_thinking)
                     },
@@ -606,31 +685,41 @@ private fun TimelineInfoSegmentCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                val summary = when (seg.type) {
-                    "tool" -> toolSummary(seg)
-                    "transcription" -> seg.content.takeIf { it.isNotBlank() } ?: "Image transcription is empty."
-                    else -> {
-                        val flat = seg.content.replace('\n', ' ')
-                        if (isStreaming && flat.length > 60) "…${flat.takeLast(60)}" else flat
-                    }
-                }
-                if (summary.isNotBlank()) {
-                    Text(
-                        text = summary,
-                        style = ChatType.metaNormal,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                if (seg.type == "thought" && seg.content.isNotBlank()) {
+                    StreamingThoughtPreviewText(
+                        content = seg.content,
+                        streaming = isStreamingContent,
                     )
+                } else {
+                    val summary = when (seg.type) {
+                        "tool" -> toolSummary(seg)
+                        "transcription" -> seg.content.takeIf { it.isNotBlank() }
+                            ?: "Image transcription is empty."
+                        else -> ""
+                    }
+                    if (summary.isNotBlank()) {
+                        if (isTool) {
+                            ToolSummaryText(
+                                presentation = ToolPresentationResolver.resolve(seg),
+                                streaming = isStreamingContent,
+                            )
+                        } else {
+                            StreamingMutedText(
+                                text = summary,
+                                streaming = isStreamingContent,
+                            )
+                        }
+                    }
                 }
             }
             Icon(
                 Icons.AutoMirrored.Filled.KeyboardArrowRight,
                 null,
                 modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
             )
+            }
+        }
         }
     }
 }
-

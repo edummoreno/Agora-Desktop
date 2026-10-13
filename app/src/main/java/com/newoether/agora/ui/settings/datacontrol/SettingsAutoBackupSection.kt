@@ -6,7 +6,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -21,6 +20,8 @@ import com.newoether.agora.R
 import com.newoether.agora.ui.settings.SettingsGroup
 import com.newoether.agora.ui.settings.SettingsItem
 import com.newoether.agora.viewmodel.ChatViewModel
+import com.newoether.agora.ui.components.AgoraDropdownMenu
+import com.newoether.agora.ui.components.AgoraDropdownMenuItem
 
 private fun categoryLabelRes(key: String): Int = when (key) {
     "conversations" -> R.string.export_category_conversations
@@ -67,9 +68,9 @@ internal fun AutoBackupSection(viewModel: ChatViewModel) {
                     Icon(Icons.Default.Schedule, null, tint = MaterialTheme.colorScheme.primary)
                 },
                 trailingContent = {
-                    Switch(checked = autoBackupEnabled, onCheckedChange = { viewModel.setAutoBackupEnabled(it) })
+                    Switch(checked = autoBackupEnabled, onCheckedChange = { viewModel.dataControl.setAutoBackupEnabled(it) })
                 },
-                modifier = Modifier.clickable { viewModel.setAutoBackupEnabled(!autoBackupEnabled) }
+                modifier = Modifier.clickable { viewModel.dataControl.setAutoBackupEnabled(!autoBackupEnabled) }
             )
         }
 
@@ -78,7 +79,7 @@ internal fun AutoBackupSection(viewModel: ChatViewModel) {
             add {
                 AutoBackupPeriodDropdown(
                     currentHours = autoBackupPeriodHours,
-                    onSelect = { viewModel.setAutoBackupPeriodHours(it) }
+                    onSelect = { viewModel.dataControl.setAutoBackupPeriodHours(it) }
                 )
             }
 
@@ -97,9 +98,9 @@ internal fun AutoBackupSection(viewModel: ChatViewModel) {
                         Icon(Icons.Default.AutoDelete, null, tint = MaterialTheme.colorScheme.primary)
                     },
                     trailingContent = {
-                        Switch(checked = autoDeleteEnabled, onCheckedChange = { viewModel.setAutoDeleteEnabled(it) })
+                        Switch(checked = autoDeleteEnabled, onCheckedChange = { viewModel.dataControl.setAutoDeleteEnabled(it) })
                     },
-                    modifier = Modifier.clickable { viewModel.setAutoDeleteEnabled(!autoDeleteEnabled) }
+                    modifier = Modifier.clickable { viewModel.dataControl.setAutoDeleteEnabled(!autoDeleteEnabled) }
                 )
             }
 
@@ -109,7 +110,7 @@ internal fun AutoBackupSection(viewModel: ChatViewModel) {
                     AutoDeletePeriodDropdown(
                         currentHours = autoDeletePeriodHours,
                         backupHours = autoBackupPeriodHours,
-                        onSelect = { viewModel.setAutoDeletePeriodHours(it) }
+                        onSelect = { viewModel.dataControl.setAutoDeletePeriodHours(it) }
                     )
                 }
             }
@@ -136,13 +137,12 @@ private fun AutoBackupPeriodDropdown(currentHours: Int, onSelect: (Int) -> Unit)
             },
             modifier = Modifier.clickable { expanded = true }
         )
-        DropdownMenu(
+        AgoraDropdownMenu(
             expanded = expanded,
-            onDismissRequest = { expanded = false },
-            shape = RoundedCornerShape(16.dp)
+            onDismissRequest = { expanded = false }
         ) {
             periods.forEach { (hours, labelRes) ->
-                DropdownMenuItem(
+                AgoraDropdownMenuItem(
                     text = { Text(stringResource(labelRes)) },
                     onClick = { onSelect(hours); expanded = false },
                     leadingIcon = if (hours == currentHours) {{ Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary) }} else {{}}
@@ -171,13 +171,12 @@ private fun AutoDeletePeriodDropdown(currentHours: Int, backupHours: Int, onSele
             },
             modifier = Modifier.clickable { expanded = true }
         )
-        DropdownMenu(
+        AgoraDropdownMenu(
             expanded = expanded,
-            onDismissRequest = { expanded = false },
-            shape = RoundedCornerShape(16.dp)
+            onDismissRequest = { expanded = false }
         ) {
             validPeriods.forEach { (hours, labelRes) ->
-                DropdownMenuItem(
+                AgoraDropdownMenuItem(
                     text = { Text(stringResource(labelRes)) },
                     onClick = { onSelect(hours); expanded = false },
                     leadingIcon = if (hours == currentHours) {{ Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary) }} else {{}}
@@ -200,7 +199,7 @@ private fun AutoBackupDirectoryItem(viewModel: ChatViewModel) {
                 uri,
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             )
-            viewModel.setAutoBackupDirectory(uri.toString())
+            viewModel.dataControl.setAutoBackupDirectory(uri.toString())
         }
     }
 
@@ -212,9 +211,6 @@ private fun AutoBackupDirectoryItem(viewModel: ChatViewModel) {
         },
         leadingContent = {
             Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.primary)
-        },
-        trailingContent = {
-            Icon(Icons.Default.FolderOpen, stringResource(R.string.edit), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
         },
         modifier = Modifier.clickable { dirPickerLauncher.launch(null) }
     )
@@ -238,9 +234,6 @@ private fun AutoBackupCategoriesItem(viewModel: ChatViewModel) {
         leadingContent = {
             Icon(Icons.Default.Topic, null, tint = MaterialTheme.colorScheme.primary)
         },
-        trailingContent = {
-            Icon(Icons.Default.ChevronRight, stringResource(R.string.edit), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-        },
         modifier = Modifier.clickable { showDialog = true }
     )
 
@@ -249,7 +242,7 @@ private fun AutoBackupCategoriesItem(viewModel: ChatViewModel) {
             selectedKeys = selectedKeys,
             onDismiss = { showDialog = false },
             onConfirm = { newKeys ->
-                viewModel.setAutoBackupCategories(newKeys.joinToString(","))
+                viewModel.dataControl.setAutoBackupCategories(newKeys.joinToString(","))
                 showDialog = false
             }
         )

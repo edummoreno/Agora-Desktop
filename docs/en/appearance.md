@@ -1,67 +1,28 @@
 # Appearance
 
-Customize Agora's look and feel — theme mode, color scheme, and style.
+Open **Settings → Appearance** to configure Agora's theme, motion, chat presentation, and font.
 
-## Theme Mode
+## Theme & Color
 
-Choose between light and dark appearance.
+- **Theme Mode** follows the device or forces light or dark mode.
+- **AMOLED** uses a pure white background in light themes and pure black in dark themes. Cards and dialogs retain their color layers, while decorative background blobs and gradients are hidden. It is off by default, applies immediately, and is included in Settings backups.
+- **Dynamic Color** is available on Android 12 and newer. While it is enabled, Agora uses the system palette and disables the manual color-scheme and scheme-style selectors.
+- **Color Scheme** selects an Agora palette, and **Scheme Style** adjusts how that palette is applied.
 
-| Mode | Description |
-|------|-------------|
-| **System** | Follow your device's system theme (default) |
-| **Light** | Always use light theme |
-| **Dark** | Always use dark theme |
+## Motion & Feedback
 
-Changes take effect immediately.
+- **Blur Effects** blurs the top of the chat list beneath the toolbar. Disable it to reduce rendering cost.
+- **Reduce Motion** reduces continuous and large spatial movement while retaining fades, direct gestures, and useful state feedback.
+- **Haptic Feedback** controls supported vibration feedback.
 
----
+## Chat Display
 
-## Color Scheme
+- **Stick to Bottom** follows new content automatically while a response is generating.
+- **Parse $…$ as Inline Math** treats single-dollar expressions as inline math. When disabled, they remain ordinary text; other math delimiters are unchanged.
+- **Thinking & Tool Blocks** can use a chronological timeline, a grouped timeline that merges consecutive thinking/tool/image blocks, or a compact layout above the answer.
+- **Thinking Segments** chooses whether a segment opens as a card or bottom sheet. This selector is shown only when Thinking & Tool Blocks is not set to Timeline.
+- **Auto-Expand Active Group** is available only with Grouped Timeline and Card thinking segments. It expands the current group and collapses it when the model moves on.
 
-Choose from a curated set of color palettes built on Material 3 design principles.
+## Font
 
-| Scheme | Character |
-|--------|-----------|
-| **Midnight** | Deep blue tones, calm and professional (default) |
-| **Nordic** | Cool teal and slate, clean and minimal |
-| **Forest** | Warm greens and earth tones, natural feel |
-| **Sunset** | Orange and warm tones, energetic |
-| **Rose** | Pink and rose accents, soft and warm |
-| **Lavender** | Purple and violet hues, elegant |
-| **Slate** | Neutral grays and blues, understated |
-| **Ocean** | Deep blue and cyan, refreshing |
-
-Each scheme has both light and dark variants.
-
----
-
-## Scheme Style
-
-The scheme style determines *how* colors from the chosen palette are applied to UI elements.
-
-| Style | Effect |
-|-------|--------|
-| **Tonal Spot** | Primary color accents on key surfaces (default) |
-| **Expressive** | Bold use of accent colors throughout |
-| **Vibrant** | High-saturation colors, lively appearance |
-| **Neutral** | Minimal color, mostly surface tones |
-
----
-
-## Blur Effects
-
-Toggle **Enable Blur Effects** to control background blur and gradient blur throughout the UI. When disabled, blur effects are replaced with solid colors, which can improve performance on lower-end devices.
-
-!!! tip "Performance"
-    Disable blur effects if you notice UI lag during scrolling or animation on older devices.
-
----
-
-## Dynamic Color (Android 12+)
-
-When enabled on devices running Android 12 or higher, Agora extracts a color palette from your system wallpaper and applies it automatically.
-
-This overrides the manual **Color Scheme** selection. Disable it to use a custom scheme.
-
-!!! info "Availability"
-    Dynamic Color requires Android 12 (API 31) or higher. On older devices, the toggle is hidden.
+Choose Agora's bundled font, the system font, or a custom font. The custom-file picker appears only for **Custom**. Agora validates imported font files and rejects an invalid file; switching away from Custom removes the imported copy managed by Agora.

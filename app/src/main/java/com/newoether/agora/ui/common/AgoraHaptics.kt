@@ -18,29 +18,25 @@ import com.newoether.agora.service.AppForegroundTracker
 
 @Stable
 interface AgoraHaptics {
-    fun action()
     fun selection()
+    fun toggle(isOn: Boolean)
     fun longPress()
-    fun success()
+    fun confirm()
     fun reject()
-    fun generationStart()
-    fun generationTick()
-    fun generationEnd()
-    fun generationStopped()
+    fun interrupt()
+    fun destructiveConfirmed()
     fun startAnsweringTexture()
     fun stopAnsweringTexture()
 }
 
 object NoOpAgoraHaptics : AgoraHaptics {
-    override fun action() = Unit
     override fun selection() = Unit
+    override fun toggle(isOn: Boolean) = Unit
     override fun longPress() = Unit
-    override fun success() = Unit
+    override fun confirm() = Unit
     override fun reject() = Unit
-    override fun generationStart() = Unit
-    override fun generationTick() = Unit
-    override fun generationEnd() = Unit
-    override fun generationStopped() = Unit
+    override fun interrupt() = Unit
+    override fun destructiveConfirmed() = Unit
     override fun startAnsweringTexture() = Unit
     override fun stopAnsweringTexture() = Unit
 }
@@ -67,77 +63,133 @@ fun rememberAgoraHaptics(enabled: Boolean): AgoraHaptics {
     return haptics
 }
 
-private class PlatformAgoraHaptics(
+internal class PlatformAgoraHaptics(
     private val view: View,
     private val enabled: () -> Boolean
 ) : AgoraHaptics {
     private val vibrator: Vibrator? = view.context.applicationContext.findVibrator()
+    private var answeringTextureRequested = false
     private var answeringTextureActive = false
+    private val resumeAnsweringTexture = Runnable {
+        textureResumeScheduled = false
+        if (answeringTextureRequested) startAnsweringTextureNow()
+    }
+    private var textureResumeScheduled = false
 
-    override fun action() = perform(HapticFeedbackConstants.VIRTUAL_KEY)
+    override fun selection() =
+        performDiscrete(selectionFeedbackForSdk(Build.VERSION.SDK_INT))
 
-    override fun selection() = perform(HapticFeedbackConstants.CLOCK_TICK)
+    override fun toggle(isOn: Boolean) =
+        performDiscrete(toggleFeedbackForSdk(Build.VERSION.SDK_INT, isOn))
 
-    override fun longPress() = perform(HapticFeedbackConstants.LONG_PRESS)
+    override fun longPress() = performDiscrete(HapticFeedbackConstants.LONG_PRESS)
 
-    override fun success() = perform(confirmFeedback())
+    override fun confirm() =
+        performDiscrete(confirmFeedbackForSdk(Build.VERSION.SDK_INT))
 
-    override fun reject() = perform(rejectFeedback())
+    override fun reject() =
+        performDiscrete(rejectFeedbackForSdk(Build.VERSION.SDK_INT))
 
-    override fun generationStart() = perform(HapticFeedbackConstants.VIRTUAL_KEY)
+    override fun interrupt() {
+        performTerminalFeedback()
+    }
 
-    override fun generationTick() = perform(HapticFeedbackConstants.CLOCK_TICK)
+    override fun destructiveConfirmed() {
+        performTerminalFeedback()
+    }
 
-    override fun generationEnd() = success()
-
-    override fun generationStopped() = perform(HapticFeedbackConstants.CONTEXT_CLICK)
+    private fun performTerminalFeedback() {
+        // Only the current Chat effect owns the texture request. This action may concern
+        // another conversation, so its discrete feedback must not revoke that request.
+        performDiscrete(HapticFeedbackConstants.CONTEXT_CLICK)
+    }
 
     override fun startAnsweringTexture() {
-        if (!isAllowed() || answeringTextureActive) return
+        answeringTextureRequested = true
+        if (!textureResumeScheduled) startAnsweringTextureNow()
+    }
+
+    private fun startAnsweringTextureNow() {
+        if (!answeringTextureRequested || !isAllowed() || answeringTextureActive) return
         val vibrator = vibrator?.takeIf { it.hasVibrator() } ?: return
         answeringTextureActive = true
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && vibrator.hasAmplitudeControl()) {
+            // Keep the continuous answering texture, but at a low duty cycle. Starting each cycle
+            // with silence prevents a resume from producing an immediate burst after a discrete
+            // tap, while the unequal pair avoids a mechanical metronome feel.
             vibrator.vibrate(
                 VibrationEffect.createWaveform(
-                    longArrayOf(16L, 32L),
-                    intArrayOf(12, 0),
+                    longArrayOf(80L, 3L, 24L, 2L, 91L),
+                    intArrayOf(0, 4, 0, 3, 0),
                     0
                 )
             )
         } else {
+            // Timing-only devices render every pulse at full strength. Sparse 1-2ms pulses keep
+            // the feature continuous without the near-solid full-power buzz of the old 43ms loop.
             @Suppress("DEPRECATION")
-            vibrator.vibrate(longArrayOf(0L, 16L, 32L), 0)
+            vibrator.vibrate(longArrayOf(80L, 2L, 40L, 1L, 77L), 0)
         }
     }
 
     override fun stopAnsweringTexture() {
+        answeringTextureRequested = false
+        view.removeCallbacks(resumeAnsweringTexture)
+        textureResumeScheduled = false
         if (!answeringTextureActive) return
         answeringTextureActive = false
         vibrator?.cancel()
     }
 
-    private fun perform(type: Int) {
-        if (isAllowed()) {
-            view.performHapticFeedback(type)
+    private fun performDiscrete(type: Int) {
+        if (!isAllowed()) return
+        view.removeCallbacks(resumeAnsweringTexture)
+        textureResumeScheduled = false
+        if (answeringTextureActive) {
+            answeringTextureActive = false
+            vibrator?.cancel()
+        }
+        view.performHapticFeedback(type)
+        if (answeringTextureRequested) {
+            textureResumeScheduled = true
+            view.postDelayed(resumeAnsweringTexture, TEXTURE_RESUME_DELAY_MS)
         }
     }
 
     private fun isAllowed(): Boolean = enabled() && AppForegroundTracker.isInForeground
 
-    private fun confirmFeedback(): Int =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            HapticFeedbackConstants.CONFIRM
-        } else {
-            HapticFeedbackConstants.VIRTUAL_KEY
-        }
-
-    private fun rejectFeedback(): Int =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            HapticFeedbackConstants.REJECT
-        } else {
-            HapticFeedbackConstants.LONG_PRESS
-        }
+    private companion object {
+        const val TEXTURE_RESUME_DELAY_MS = 160L
+    }
 }
+
+internal fun selectionFeedbackForSdk(sdkInt: Int): Int =
+    if (sdkInt >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        HapticFeedbackConstants.SEGMENT_TICK
+    } else {
+        HapticFeedbackConstants.CLOCK_TICK
+    }
+
+internal fun toggleFeedbackForSdk(sdkInt: Int, isOn: Boolean): Int =
+    if (sdkInt >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        if (isOn) HapticFeedbackConstants.TOGGLE_ON else HapticFeedbackConstants.TOGGLE_OFF
+    } else {
+        HapticFeedbackConstants.CLOCK_TICK
+    }
+
+internal fun confirmFeedbackForSdk(sdkInt: Int): Int =
+    if (sdkInt >= Build.VERSION_CODES.R) {
+        HapticFeedbackConstants.CONFIRM
+    } else {
+        HapticFeedbackConstants.VIRTUAL_KEY
+    }
+
+internal fun rejectFeedbackForSdk(sdkInt: Int): Int =
+    if (sdkInt >= Build.VERSION_CODES.R) {
+        HapticFeedbackConstants.REJECT
+    } else {
+        HapticFeedbackConstants.LONG_PRESS
+    }
 
 private fun Context.findVibrator(): Vibrator? =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

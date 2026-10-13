@@ -4,6 +4,7 @@ import com.newoether.agora.api.OpenAiContentPart
 import com.newoether.agora.api.OpenAiImageUrl
 import com.newoether.agora.api.OpenAiMessage
 import com.newoether.agora.model.ChatMessage
+import com.newoether.agora.model.MessageSegment
 import com.newoether.agora.model.Participant
 import com.newoether.agora.util.Constants
 import org.junit.Assert.*
@@ -31,18 +32,19 @@ class MessageConverterTest {
     }
 
     @Test
-    fun limitContext_respectsMaxUserMessages() {
+    fun limitContext_respectsEstimatedTokenBudget() {
         val msgs = (1..10).map { i ->
             ChatMessage(
                 id = "msg$i",
                 parentId = null,
-                text = "msg $i",
+                text = "message-$i " + "payload ".repeat(40),
                 participant = if (i % 2 == 0) Participant.MODEL else Participant.USER
             )
         }
-        val result = limitContext(msgs, 3)
+        val result = limitContext(msgs, 140)
         val userCount = result.count { it.participant == Participant.USER }
-        assertTrue(userCount <= 3)
+        assertEquals(1, userCount)
+        assertEquals(listOf("msg9", "msg10"), result.map { it.id })
     }
 
     @Test
@@ -58,13 +60,45 @@ class MessageConverterTest {
             ChatMessage(id = "u2", parentId = "m2", text = "user2", participant = Participant.USER),
             ChatMessage(id = "m3", parentId = "u2", text = "resp3", participant = Participant.MODEL)
         )
-        // maxUserMessages=2: reversed iteration processes m3→u2→m2→r1→t1→m1→u1
-        // m3 (non-tool, count=1), u2 (non-tool, count=2, break)
-        // result = [u2, m3]
-        val result = limitContext(msgs, 2)
+        val result = limitContext(msgs, 20)
         assertEquals(2, result.size)
         assertEquals("u2", result[0].id)
         assertEquals("m3", result[1].id)
+    }
+    @Test
+    fun limitContextCountsOrdinaryReasoningOnlyWhenRequested() {
+        val anchor = ChatMessage(
+            id = "u1",
+            text = "question",
+            participant = Participant.USER,
+        )
+        val older = ChatMessage(
+            id = "m1",
+            text = "answer",
+            participant = Participant.MODEL,
+            segments = listOf(
+                MessageSegment(type = "thought", content = "reasoning ".repeat(80)),
+            ),
+        )
+        val latest = ChatMessage(
+            id = "u2",
+            text = "latest",
+            participant = Participant.USER,
+        )
+        val messages = listOf(anchor, older, latest)
+        val budget = ContextTokenEstimator.estimate(messages)
+        assertEquals(
+            listOf("u1", "m1", "u2"),
+            limitContext(messages, budget).map(ChatMessage::id),
+        )
+        assertEquals(
+            listOf("u2"),
+            limitContext(
+                messages,
+                budget,
+                includeAssistantReasoning = true,
+            ).map(ChatMessage::id),
+        )
     }
 
     @Test
@@ -72,19 +106,23 @@ class MessageConverterTest {
         val msgs = listOf(
             ChatMessage(id = "u1", parentId = null, text = "hello", participant = Participant.USER)
         )
-        val result = convertToOpenAiMessages(msgs, "You are helpful")
+        val result = convertToOpenAiMessages(
+            msgs,
+            "You are helpful",
+            base64Files = Base64FileRegistry(),
+        )
         assertEquals("system", result.first().role)
-        assertEquals("You are helpful", result.first().content.first().text)
+        assertEquals("You are helpful", result.first().content!!.first().text)
     }
 
     @Test
     fun convertToOpenAiMessages_userAndModelRoles() {
         val msg = ChatMessage(id = "u1", text = "hello", participant = Participant.USER)
-        val result = convertToOpenAiMessages(listOf(msg))
+        val result = convertToOpenAiMessages(listOf(msg), base64Files = Base64FileRegistry())
         assertEquals("user", result.first().role)
 
         val modelMsg = ChatMessage(id = "m1", text = "response", participant = Participant.MODEL)
-        val result2 = convertToOpenAiMessages(listOf(modelMsg))
+        val result2 = convertToOpenAiMessages(listOf(modelMsg), base64Files = Base64FileRegistry())
         assertEquals("assistant", result2.first().role)
     }
 
@@ -95,17 +133,21 @@ class MessageConverterTest {
             images = listOf("/nonexistent/image.jpg"),
             participant = Participant.USER
         )
-        val result = convertToOpenAiMessages(listOf(msg), includeImages = false)
-        assertEquals(1, result.first().content.size) // only text, no image
-        assertEquals("text", result.first().content.first().type)
+        val result = convertToOpenAiMessages(
+            listOf(msg),
+            includeImages = false,
+            base64Files = Base64FileRegistry(),
+        )
+        assertEquals(1, result.first().content!!.size) // only text, no image
+        assertEquals("text", result.first().content!!.first().type)
     }
 
     @Test
-    fun convertToOpenAiMessages_emptyText_addsSpacePart() {
+    fun convertToOpenAiMessages_emptyText_addsVisibleFallbackPart() {
         val msg = ChatMessage(id = "u1", text = "", participant = Participant.USER)
-        val result = convertToOpenAiMessages(listOf(msg))
-        assertEquals(1, result.first().content.size)
-        assertEquals(" ", result.first().content.first().text)
+        val result = convertToOpenAiMessages(listOf(msg), base64Files = Base64FileRegistry())
+        assertEquals(1, result.first().content!!.size)
+        assertEquals("[Attachment unavailable]", result.first().content!!.first().text)
     }
 
     @Test
@@ -156,5 +198,54 @@ class MessageConverterTest {
         assertTrue(result[1].images.isEmpty())
         assertTrue(result[2].images.isEmpty())
         assertEquals("continue", result[2].text)
+    }
+
+    @Test
+    fun convertToOpenAiMessages_forwardAssistantReasoning_replaysStoredChainOfThought() {
+        val messages = listOf(
+            ChatMessage(id = "u1", text = "use a tool", participant = Participant.USER),
+            ChatMessage(
+                id = "m1",
+                text = "final answer",
+                participant = Participant.MODEL,
+                segments = listOf(
+                    MessageSegment(type = "thought", content = "step one"),
+                    MessageSegment(type = "thought", content = "step two"),
+                    MessageSegment(type = "answer", content = "final answer"),
+                ),
+            ),
+        )
+
+        val forwarded = convertToOpenAiMessages(
+            messages,
+            base64Files = Base64FileRegistry(),
+            forwardAssistantReasoning = true,
+        )
+        val plain = convertToOpenAiMessages(messages, base64Files = Base64FileRegistry())
+
+        assertEquals("step one\nstep two", forwarded.last().reasoningContent)
+        assertNull(plain.last().reasoningContent)
+        assertNull(forwarded.first().reasoningContent)
+    }
+
+    @Test
+    fun convertToOpenAiMessages_forwardAssistantReasoning_omitsTurnsWithoutThought() {
+        val messages = listOf(
+            ChatMessage(id = "u1", text = "hello", participant = Participant.USER),
+            ChatMessage(
+                id = "m1",
+                text = "answer",
+                participant = Participant.MODEL,
+                segments = listOf(MessageSegment(type = "answer", content = "answer")),
+            ),
+        )
+
+        val result = convertToOpenAiMessages(
+            messages,
+            base64Files = Base64FileRegistry(),
+            forwardAssistantReasoning = true,
+        )
+
+        assertNull(result.last().reasoningContent)
     }
 }

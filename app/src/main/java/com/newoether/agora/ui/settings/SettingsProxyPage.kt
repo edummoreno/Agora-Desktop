@@ -13,16 +13,17 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.newoether.agora.R
 import com.newoether.agora.util.noOpBringIntoView
 import com.newoether.agora.viewmodel.ChatViewModel
+import com.newoether.agora.ui.components.SecretVisibilityToggle
+import com.newoether.agora.ui.components.rememberSecretVisible
+import com.newoether.agora.ui.components.secretVisualTransformation
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -61,7 +62,7 @@ fun SettingsProxyPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                     if (enabled) {
                         // Type selector
                         add {
-                            ProxyCard(icon = Icons.Default.Lan) {
+                            SettingsIconContent(icon = Icons.Default.Lan) {
                                 Text(
                                     stringResource(R.string.proxy_type),
                                     style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
@@ -71,13 +72,14 @@ fun SettingsProxyPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                 PillTabSwitcher(
                                     tabs = proxyTypes.map { it.second },
                                     selectedIndex = proxyTypes.indexOfFirst { it.first == type }.coerceAtLeast(0),
-                                    onSelect = { viewModel.settings.setProxyType(proxyTypes[it].first) }
+                                    onSelect = { viewModel.settings.setProxyType(proxyTypes[it].first) },
+                                    allowLabelOverflow = true,
                                 )
                             }
                         }
                         // Server endpoint: host + port on one row
                         add {
-                            ProxyCard(icon = Icons.Default.Dns) {
+                            SettingsIconContent(icon = Icons.Default.Dns) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -102,7 +104,7 @@ fun SettingsProxyPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                         }
                         // Credentials: username + password stacked in one card
                         add {
-                            ProxyCard(icon = Icons.Default.Person) {
+                            SettingsIconContent(icon = Icons.Default.Person) {
                                 ProxyLabeledField(
                                     label = stringResource(R.string.proxy_username),
                                     value = username,
@@ -124,7 +126,7 @@ fun SettingsProxyPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                 SettingsGroup(
                     title = stringResource(R.string.proxy_bypass),
                     items = listOf({
-                        ProxyCard(icon = Icons.AutoMirrored.Filled.AltRoute) {
+                        SettingsIconContent(icon = Icons.AutoMirrored.Filled.AltRoute) {
                             ProxyLabeledField(
                                 label = stringResource(R.string.proxy_bypass),
                                 description = stringResource(R.string.proxy_bypass_desc),
@@ -141,20 +143,8 @@ fun SettingsProxyPage(viewModel: ChatViewModel, onBack: () -> Unit) {
     }
 }
 
-/** Card body wrapper following the app's in-card layout: a primary-tinted leading icon and a
- *  content [Column]. Compose one or more [ProxyLabeledField]s (or other content) inside. */
-@Composable
-private fun ProxyCard(icon: ImageVector, content: @Composable ColumnScope.() -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 16.dp)) {
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-            Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 2.dp))
-            Spacer(Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f), content = content)
-        }
-    }
-}
-
-/** A labeled outlined field (no icon, no outer padding) for composing inside a [ProxyCard]:
+/** A labeled outlined field (no icon, no outer padding) for composing inside a
+ *  [SettingsIconContent]:
  *  a [bodyLarge]/Medium label, an optional description, then an outlined field with body text. */
 @Composable
 private fun ProxyLabeledField(
@@ -169,6 +159,7 @@ private fun ProxyLabeledField(
     singleLine: Boolean = true
 ) {
     var draft by remember { mutableStateOf(value) }
+    var secretVisible by rememberSecretVisible()
     LaunchedEffect(value) { if (value != draft) draft = value }
     Column(modifier = modifier) {
         Text(
@@ -191,7 +182,12 @@ private fun ProxyLabeledField(
                 placeholder = placeholder?.let { ph -> { Text(ph, style = MaterialTheme.typography.bodyMedium) } },
                 singleLine = singleLine,
                 keyboardOptions = KeyboardOptions(keyboardType = keyboard),
-                visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
+                visualTransformation = if (password) secretVisualTransformation(secretVisible) else VisualTransformation.None,
+                trailingIcon = if (password) {
+                    { SecretVisibilityToggle(secretVisible) { secretVisible = !secretVisible } }
+                } else {
+                    null
+                },
                 shape = RoundedCornerShape(16.dp),
                 textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurfaceVariant),
                 modifier = Modifier.fillMaxWidth()

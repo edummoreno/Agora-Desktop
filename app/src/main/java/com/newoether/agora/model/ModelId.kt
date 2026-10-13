@@ -25,13 +25,15 @@ data class ModelId(
                 val idx = prefixed.indexOf(":")
                 return ModelId(prefixed.substring(0, idx), prefixed.substring(idx + 1))
             }
-            // Legacy / unprefixed model IDs — match the heuristics in
-            // ChatViewModel.getProviderForModel().
+            // Legacy / unprefixed model IDs. Single source of truth for these
+            // heuristics — ProviderRegistry.providerForModel delegates here.
             val provider = when {
-                prefixed.startsWith("gpt-") || prefixed.startsWith("o1") || prefixed.startsWith("o3") -> Constants.PROVIDER_OPENAI
+                prefixed.startsWith("gpt-") || prefixed.startsWith("o1") ||
+                    prefixed.startsWith("o3") || prefixed.startsWith("o4") -> Constants.PROVIDER_OPENAI
                 prefixed.startsWith("claude-") -> Constants.PROVIDER_ANTHROPIC
                 prefixed.contains("deepseek") -> Constants.PROVIDER_DEEPSEEK
                 prefixed.contains("qwen") -> Constants.PROVIDER_QWEN
+                prefixed.contains("groq") -> Constants.PROVIDER_GROQ
                 prefixed.contains("models/") || prefixed.startsWith("gemini") -> Constants.PROVIDER_GOOGLE
                 else -> Constants.PROVIDER_UNKNOWN
             }

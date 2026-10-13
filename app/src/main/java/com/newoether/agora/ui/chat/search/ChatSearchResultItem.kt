@@ -20,9 +20,12 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.newoether.agora.R
+import com.newoether.agora.data.CustomProviderConfig
+import com.newoether.agora.data.replaceCustomProviderIdsForDisplay
 import com.newoether.agora.data.local.MessageEntity
 import com.newoether.agora.model.Participant
 
@@ -32,8 +35,10 @@ internal fun SearchResultItem(
     messages: List<MessageEntity>,
     score: Float = 0f,
     query: String,
+    customProviders: List<CustomProviderConfig>,
     onClick: () -> Unit
 ) {
+    val displayTitle = replaceCustomProviderIdsForDisplay(title, customProviders)
     val highlightColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
     val textColor = MaterialTheme.colorScheme.onSurfaceVariant
 
@@ -78,10 +83,11 @@ internal fun SearchResultItem(
         Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = highlight(title),
+                    text = highlight(displayTitle),
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
                 if (score > 0f) {
@@ -98,10 +104,16 @@ internal fun SearchResultItem(
                     stringResource(R.string.search_role_user)
                 else
                     stringResource(R.string.search_role_model)
+                val displayMessageText = replaceCustomProviderIdsForDisplay(
+                    msg.text,
+                    customProviders,
+                )
                 Text(
                     text = buildAnnotatedString {
                         withStyle(SpanStyle(color = textColor)) { append("$role: ") }
-                        withStyle(SpanStyle(color = textColor)) { append(highlight(snippetAroundMatch(msg.text, query))) }
+                        withStyle(SpanStyle(color = textColor)) {
+                            append(highlight(snippetAroundMatch(displayMessageText, query)))
+                        }
                     },
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 2

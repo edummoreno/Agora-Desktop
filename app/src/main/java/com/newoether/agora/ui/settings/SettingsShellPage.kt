@@ -12,6 +12,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import com.newoether.agora.ui.motion.MotionAwareCircularProgressIndicator as CircularProgressIndicator
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -19,7 +20,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
@@ -28,11 +28,16 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import com.newoether.agora.R
 import com.newoether.agora.data.ShellDeviceConfig
+import com.newoether.agora.ui.motion.LocalAgoraMotionPolicy
 import com.newoether.agora.viewmodel.ChatViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 import java.util.UUID
+import com.newoether.agora.ui.components.AgoraDropdownMenuItem
+import com.newoether.agora.ui.components.AgoraExposedDropdownMenu
+import com.newoether.agora.ui.components.SecretVisibilityToggle
+import com.newoether.agora.ui.components.rememberSecretVisible
+import com.newoether.agora.ui.components.secretVisualTransformation
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,6 +46,8 @@ fun SettingsShellPage(viewModel: ChatViewModel, onBack: () -> Unit) {
     val shellConfirmEnabled by viewModel.settings.shellConfirmEnabled.collectAsState()
     val shellDevices by viewModel.settings.shellDevices.collectAsState()
     val sandboxEnabled by viewModel.settings.sandboxEnabled.collectAsState()
+    val sandboxSharedStorageEnabled by
+        viewModel.settings.sandboxSharedStorageEnabled.collectAsState()
     val density = androidx.compose.ui.platform.LocalDensity.current
     var newlyAddedDeviceId by remember { mutableStateOf<String?>(null) }
     var deleteConfirmDeviceId by remember { mutableStateOf<String?>(null) }
@@ -56,12 +63,17 @@ fun SettingsShellPage(viewModel: ChatViewModel, onBack: () -> Unit) {
         forward = showSandboxMgmt
     ) { isMgmt ->
         if (isMgmt && viewModel.sandboxManager != null) {
-            key(sandboxEntryCount) {
-                SettingsSandboxPage(
-                    sandboxManager = viewModel.sandboxManager!!,
-                    onBack = { showSandboxMgmt = false },
-                    showDocFab = showDocFab
-                )
+            SettingsSecondaryPane {
+                key(sandboxEntryCount) {
+                    SettingsSandboxPage(
+                        sandboxManager = viewModel.sandboxManager!!,
+                        onBack = { showSandboxMgmt = false },
+                        showDocFab = showDocFab,
+                        sharedStorageEnabled = sandboxSharedStorageEnabled,
+                        onSharedStorageEnabledChange =
+                            viewModel.settings::setSandboxSharedStorageEnabled,
+                    )
+                }
             }
         } else {
             val scrollState = rememberScrollState()
@@ -88,8 +100,8 @@ fun SettingsShellPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                             headlineContent = { Text(stringResource(R.string.shell_confirm_setting)) },
                             supportingContent = { Text(stringResource(R.string.shell_confirm_setting_desc)) },
                             leadingContent = { Icon(Icons.Default.Shield, null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = { Switch(checked = shellConfirmEnabled, onCheckedChange = { viewModel.setShellConfirmEnabled(it) }) },
-                            modifier = Modifier.clickable { viewModel.setShellConfirmEnabled(!shellConfirmEnabled) }
+                            trailingContent = { Switch(checked = shellConfirmEnabled, onCheckedChange = { viewModel.shellConfirmation.setEnabled(it) }) },
+                            modifier = Modifier.clickable { viewModel.shellConfirmation.setEnabled(!shellConfirmEnabled) }
                         )
                     }
                 }
@@ -117,20 +129,14 @@ fun SettingsShellPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                         shellDevices.forEach { device -> add { DeviceEditor(viewModel, device, scrollState, density, newlyAddedDeviceId, onNewDeviceId = { newlyAddedDeviceId = it }, onDeleteConfirm = { deleteConfirmDeviceId = it }) } }
                     }
                     add {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).clickable {
+                        SettingsAddItem(
+                            label = stringResource(R.string.shell_add_device),
+                            onClick = {
                                 val newId = UUID.randomUUID().toString()
                                 newlyAddedDeviceId = newId
-                                viewModel.addShellDevice(ShellDeviceConfig(id = newId, name = "", description = ""))
-                            }.padding(horizontal = 16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Add, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                                Spacer(Modifier.width(8.dp))
-                                Text(stringResource(R.string.shell_add_device), color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
-                            }
-                        }
+                                viewModel.settings.addShellDevice(ShellDeviceConfig(id = newId, name = "", description = ""))
+                            },
+                        )
                     }
                 })
             }
@@ -180,9 +186,6 @@ private fun SandboxSection(viewModel: ChatViewModel, sandboxEnabled: Boolean, on
                     headlineContent = { Text(stringResource(R.string.sandbox_manage)) },
                     supportingContent = { Text(stringResource(R.string.sandbox_manage_desc)) },
                     leadingContent = { Icon(Icons.Default.Settings, null, tint = MaterialTheme.colorScheme.primary) },
-                    trailingContent = {
-                        Icon(Icons.Default.ChevronRight, stringResource(R.string.edit), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    },
                     modifier = Modifier.clickable { onManage() }
                 )
             }
@@ -218,6 +221,7 @@ private fun DeviceEditor(
     onNewDeviceId: (String?) -> Unit,
     onDeleteConfirm: (String?) -> Unit
 ) {
+    val motionPolicy = LocalAgoraMotionPolicy.current
     val isNewlyAdded = device.id == newlyAddedDeviceId
     var expanded by remember(device.id) { mutableStateOf(false) }
     var nameInput by remember(device.id) { mutableStateOf(device.name) }
@@ -230,7 +234,6 @@ private fun DeviceEditor(
     var sshPortInput by remember(device.id) { mutableStateOf(device.sshPort.toString()) }
     var sshUserInput by remember(device.id) { mutableStateOf(device.sshUser) }
     var sshPwInput by remember(device.id) { mutableStateOf(device.sshPassword) }
-    var timeoutInput by remember(device.id) { mutableStateOf(device.timeout) }
     var sshHostKeyInput by remember(device.id) { mutableStateOf(device.sshHostKey) }
     val nameFocusRequester = remember { FocusRequester() }
     val urlFocusRequester = remember { FocusRequester() }
@@ -244,14 +247,19 @@ private fun DeviceEditor(
         nameInput = device.name; descInput = device.description; typeInput = device.type
         urlInput = device.serverUrl; keyInput = device.apiKey
         sshHostInput = device.sshHost; sshPortInput = device.sshPort.toString()
-        sshUserInput = device.sshUser; sshPwInput = device.sshPassword; timeoutInput = device.timeout
+        sshUserInput = device.sshUser; sshPwInput = device.sshPassword
         sshHostKeyInput = device.sshHostKey
     }
 
     LaunchedEffect(isNewlyAdded) {
         if (isNewlyAdded) {
             expanded = true; delay(50); urlFocusRequester.requestFocus()
-            scrollState.animateScrollTo(scrollState.maxValue + (250 * density.density).toInt(), tween(500))
+            val target = scrollState.maxValue + (250 * density.density).toInt()
+            if (motionPolicy.allowProgrammaticScrollMotion) {
+                scrollState.animateScrollTo(target, tween(500))
+            } else {
+                scrollState.scrollTo(target)
+            }
             onNewDeviceId(null)
         }
     }
@@ -285,7 +293,19 @@ private fun DeviceEditor(
             modifier = Modifier.clickable { expanded = !expanded }
         )
 
-        AnimatedVisibility(visible = expanded, enter = expandVertically(), exit = shrinkVertically()) {
+        AnimatedVisibility(
+            visible = expanded,
+            enter = if (motionPolicy.allowSpatialTransitions) {
+                expandVertically()
+            } else {
+                fadeIn()
+            },
+            exit = if (motionPolicy.allowSpatialTransitions) {
+                shrinkVertically()
+            } else {
+                fadeOut()
+            },
+        ) {
             Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
                 Spacer(Modifier.height(8.dp))
 
@@ -300,18 +320,19 @@ private fun DeviceEditor(
                         shape = RoundedCornerShape(16.dp),
                         modifier = Modifier.menuAnchor().fillMaxWidth()
                     )
-                    ExposedDropdownMenu(
+                    AgoraExposedDropdownMenu(
                         expanded = typeMenuExpanded,
-                        onDismissRequest = { typeMenuExpanded = false },
-                        shape = RoundedCornerShape(16.dp)
+                        onDismissRequest = { typeMenuExpanded = false }
                     ) {
-                        DropdownMenuItem(text = { Text("Conch") }, onClick = { typeInput = "conch"; typeMenuExpanded = false }, leadingIcon = { Icon(Icons.Default.Cable, null) })
-                        DropdownMenuItem(text = { Text("SSH") }, onClick = { typeInput = "ssh"; typeMenuExpanded = false }, leadingIcon = { Icon(Icons.Default.Cable, null) })
+                        AgoraDropdownMenuItem(text = { Text("Conch") }, onClick = { typeInput = "conch"; typeMenuExpanded = false }, leadingIcon = { Icon(Icons.Default.Cable, null) })
+                        AgoraDropdownMenuItem(text = { Text("SSH") }, onClick = { typeInput = "ssh"; typeMenuExpanded = false }, leadingIcon = { Icon(Icons.Default.Cable, null) })
                     }
                 }
                 Spacer(Modifier.height(10.dp))
 
                 // Conditional fields
+                var keyVisible by rememberSecretVisible()
+                var passwordVisible by rememberSecretVisible()
                 if (typeInput == "conch") {
                     OutlinedTextField(value = urlInput, onValueChange = { urlInput = it }, label = { Text(stringResource(R.string.shell_device_url)) },
                         placeholder = { Text(stringResource(R.string.shell_device_url_hint)) }, leadingIcon = { Icon(Icons.Default.Link, null) },
@@ -319,7 +340,9 @@ private fun DeviceEditor(
                     Spacer(Modifier.height(10.dp))
                     OutlinedTextField(value = keyInput, onValueChange = { keyInput = it }, label = { Text(stringResource(R.string.shell_device_key)) },
                         placeholder = { Text(stringResource(R.string.shell_device_key_hint)) }, leadingIcon = { Icon(Icons.Default.Key, null) },
-                        visualTransformation = PasswordVisualTransformation(), singleLine = true, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth())
+                        visualTransformation = secretVisualTransformation(keyVisible),
+                        trailingIcon = { SecretVisibilityToggle(keyVisible) { keyVisible = !keyVisible } },
+                        singleLine = true, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth())
                 } else {
                     OutlinedTextField(value = sshHostInput, onValueChange = { sshHostInput = it }, label = { Text(stringResource(R.string.shell_device_host)) },
                         placeholder = { Text(stringResource(R.string.shell_device_host_hint)) }, leadingIcon = { Icon(Icons.Default.Dns, null) },
@@ -335,7 +358,8 @@ private fun DeviceEditor(
                     }
                     Spacer(Modifier.height(10.dp))
                     OutlinedTextField(value = sshPwInput, onValueChange = { sshPwInput = it }, label = { Text(stringResource(R.string.shell_device_password)) },
-                        leadingIcon = { Icon(Icons.Default.Password, null) }, visualTransformation = PasswordVisualTransformation(),
+                        leadingIcon = { Icon(Icons.Default.Password, null) }, visualTransformation = secretVisualTransformation(passwordVisible),
+                        trailingIcon = { SecretVisibilityToggle(passwordVisible) { passwordVisible = !passwordVisible } },
                         singleLine = true, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth())
 
                     // ── Host-key pinning (TOFU) ──
@@ -372,9 +396,9 @@ private fun DeviceEditor(
                         onClick = {
                             verifyError = null; verifying = true
                             scope.launch {
-                                val result = viewModel.verifySshHostKey(
+                                val result = viewModel.sshHostKeyVerifier.verify(
                                     sshHostInput.trim(), sshPortInput.toIntOrNull() ?: 22,
-                                    sshUserInput.trim().ifBlank { "root" }, sshPwInput, timeoutInput
+                                    sshUserInput.trim().ifBlank { "root" }, sshPwInput
                                 )
                                 verifying = false
                                 result.fold(
@@ -405,16 +429,6 @@ private fun DeviceEditor(
                     placeholder = { Text(stringResource(R.string.shell_device_desc_hint)) }, leadingIcon = { Icon(Icons.Default.Description, null) },
                     singleLine = true, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth())
 
-                // Timeout
-                Spacer(Modifier.height(10.dp))
-                Text(stringResource(R.string.shell_device_timeout), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurface)
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.Schedule, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text(stringResource(R.string.shell_timeout_value, timeoutInput), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(48.dp))
-                    Slider(value = timeoutInput.toFloat(), onValueChange = { timeoutInput = (it / 5f).roundToInt() * 5 }, valueRange = 5f..120f, steps = 22, modifier = Modifier.weight(1f))
-                }
-
                 Spacer(Modifier.height(12.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { onDeleteConfirm(device.id) }, modifier = Modifier.weight(1f),
@@ -422,7 +436,7 @@ private fun DeviceEditor(
                         Icon(Icons.Default.Delete, null, modifier = Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text(stringResource(R.string.shell_remove_device))
                     }
                     Button(onClick = {
-                        viewModel.updateShellDevice(device.copy(
+                        viewModel.settings.updateShellDevice(device.copy(
                             name = nameInput.trim(), description = descInput.trim(), type = typeInput,
                             serverUrl = if (typeInput == "conch") urlInput.trim() else "",
                             apiKey = if (typeInput == "conch") keyInput.trim() else "",
@@ -430,8 +444,7 @@ private fun DeviceEditor(
                             sshPort = sshPortInput.toIntOrNull() ?: 22,
                             sshUser = if (typeInput == "ssh") sshUserInput.trim().ifBlank { "root" } else "root",
                             sshPassword = if (typeInput == "ssh") sshPwInput else "",
-                            sshHostKey = if (typeInput == "ssh") sshHostKeyInput else "",
-                            timeout = timeoutInput
+                            sshHostKey = if (typeInput == "ssh") sshHostKeyInput else ""
                         )); expanded = false
                     }, modifier = Modifier.weight(1f)) { Text(stringResource(R.string.save)) }
                 }

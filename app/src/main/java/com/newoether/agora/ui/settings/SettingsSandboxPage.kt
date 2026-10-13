@@ -1,9 +1,14 @@
 package com.newoether.agora.ui.settings
 
-import android.util.Log
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -24,6 +29,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
+import com.newoether.agora.ui.motion.MotionAwareCircularProgressIndicator as CircularProgressIndicator
+import com.newoether.agora.ui.motion.MotionAwareLinearProgressIndicator
+import com.newoether.agora.ui.motion.LocalAgoraMotionPolicy
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.getValue
@@ -36,6 +44,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.Velocity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -43,16 +52,49 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.newoether.agora.R
-import com.newoether.agora.sandbox.openSandboxHome
+import com.newoether.agora.sandbox.openSandboxRoot
 import com.newoether.agora.sandbox.SandboxManager
+import com.newoether.agora.sandbox.SandboxSharedStorageAccess
+import com.newoether.agora.util.DebugLog
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsSandboxPage(sandboxManager: SandboxManager, onBack: () -> Unit, showDocFab: Boolean = false) {
+fun SettingsSandboxPage(
+    sandboxManager: SandboxManager,
+    onBack: () -> Unit,
+    showDocFab: Boolean = false,
+    sharedStorageEnabled: Boolean = false,
+    onSharedStorageEnabledChange: (Boolean) -> Unit = {},
+) {
+    val motionPolicy = LocalAgoraMotionPolicy.current
     val scope = rememberCoroutineScope()
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     val ctx = androidx.compose.ui.platform.LocalContext.current
+    val installFailedMessage = stringResource(R.string.sandbox_install_failed)
+    var sharedStorageAccessGranted by remember {
+        mutableStateOf(SandboxSharedStorageAccess.isGranted(ctx))
+    }
+    val sharedStorageSettingsLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        sharedStorageAccessGranted = SandboxSharedStorageAccess.isGranted(ctx)
+    }
+    val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) {
+        sharedStorageAccessGranted = SandboxSharedStorageAccess.isGranted(ctx)
+    }
+    fun requestSharedStorageAccess() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            SandboxSharedStorageAccess.settingsIntent(ctx)
+                ?.let(sharedStorageSettingsLauncher::launch)
+        } else {
+            legacyStoragePermissionLauncher.launch(
+                SandboxSharedStorageAccess.legacyPermissions,
+            )
+        }
+    }
 
     // Core state — use fast sync check for instant first paint, confirm async
     var available by remember { mutableStateOf(sandboxManager.isAvailableSync()) }
@@ -102,7 +144,7 @@ fun SettingsSandboxPage(sandboxManager: SandboxManager, onBack: () -> Unit, show
             try {
                 available = sandboxManager.isAvailable()
                 if (available) { installError = null; sandboxManager.refreshPackageList() }
-                else installError = sandboxManager.lastError ?: ctx.getString(R.string.sandbox_install_failed)
+                else installError = sandboxManager.lastError ?: installFailedMessage
             } catch (e: Exception) { installError = e.message }
         }
     }
@@ -112,10 +154,19 @@ fun SettingsSandboxPage(sandboxManager: SandboxManager, onBack: () -> Unit, show
 
     val quickPkgs = listOf("python3", "git", "curl", "wget", "openssh", "nodejs", "build-base", "htop")
     val pkgCount = backendPackages.size
-    var diskUsageMB by remember { mutableStateOf(0L) }
+    var diskUsageMB by remember { mutableLongStateOf(0L) }
     LaunchedEffect(backendPackages.size) {
         try { diskUsageMB = sandboxManager.getDiskUsageMB() } catch (_: Exception) {}
     }
+    val diskUsageProgress by animateFloatAsState(
+        targetValue = (diskUsageMB.toFloat() / 2048f).coerceIn(0f, 1f),
+        animationSpec = if (motionPolicy.allowSpatialTransitions) {
+            tween(durationMillis = 500, easing = FastOutSlowInEasing)
+        } else {
+            snap()
+        },
+        label = "sandboxDiskUsageProgress",
+    )
 
     CollapsingSettingsLazyScaffold(
         title = stringResource(R.string.sandbox_mgmt_title),
@@ -144,7 +195,9 @@ fun SettingsSandboxPage(sandboxManager: SandboxManager, onBack: () -> Unit, show
                                             if (p != null) {
                                                 LinearProgressIndicator(progress = { p }, modifier = Modifier.fillMaxWidth().height(4.dp))
                                             } else {
-                                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(4.dp))
+                                                MotionAwareLinearProgressIndicator(
+                                                    modifier = Modifier.fillMaxWidth().height(4.dp),
+                                                )
                                             }
                                             Spacer(Modifier.height(4.dp))
                                             Text(
@@ -172,10 +225,9 @@ fun SettingsSandboxPage(sandboxManager: SandboxManager, onBack: () -> Unit, show
                                 },
                                 leadingContent = {
                                     Icon(
-                                        if (installingRootfs) Icons.Default.HourglassTop else Icons.Default.Warning,
-                                        null,
-                                        tint = if (installingRootfs) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.error
+                                        painter = painterResource(R.drawable.ic_alpine_linux),
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
                                     )
                                 },
                                 trailingContent = {
@@ -201,7 +253,7 @@ fun SettingsSandboxPage(sandboxManager: SandboxManager, onBack: () -> Unit, show
                                     Column {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
                                             LinearProgressIndicator(
-                                                progress = { (diskUsageMB.toFloat() / 2048f).coerceIn(0f, 1f) },
+                                                progress = { diskUsageProgress },
                                                 modifier = Modifier.weight(0.3f).height(6.dp),
                                                 trackColor = MaterialTheme.colorScheme.surfaceVariant
                                             )
@@ -223,9 +275,9 @@ fun SettingsSandboxPage(sandboxManager: SandboxManager, onBack: () -> Unit, show
                                 },
                                 leadingContent = {
                                     Icon(
-                                        Icons.Default.CheckCircle,
-                                        null,
-                                        tint = MaterialTheme.colorScheme.primary
+                                        painter = painterResource(R.drawable.ic_alpine_linux),
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
                                     )
                                 },
                                 trailingContent = {
@@ -242,44 +294,128 @@ fun SettingsSandboxPage(sandboxManager: SandboxManager, onBack: () -> Unit, show
                 }
 
                 if (available) {
-                    // ═══ Browse Files ═══
+                    // ═══ Files and shared storage ═══
                     item {
                         SettingsGroup(
                             title = stringResource(R.string.sandbox_browse_files),
-                            items = listOf({
-                                SettingsItem(
-                                    headlineContent = {
-                                        Text(
-                                            stringResource(R.string.sandbox_browse_files),
-                                            fontWeight = FontWeight.Medium
-                                        )
-                                    },
-                                    supportingContent = {
-                                        Text(
-                                            stringResource(R.string.sandbox_browse_files_desc),
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    },
-                                    leadingContent = {
-                                        Icon(
-                                            Icons.Default.Folder,
-                                            null,
-                                            tint = MaterialTheme.colorScheme.primary
-                                        )
-                                    },
-                                    modifier = Modifier.clickable {
-                                        val homeDir = sandboxManager.getSandboxHomeDir()
-                                        if (homeDir != null) {
-                                            homeDir.mkdirs()
+                            items = buildList {
+                                add {
+                                    SettingsItem(
+                                        headlineContent = {
+                                            Text(
+                                                stringResource(R.string.sandbox_browse_files),
+                                                fontWeight = FontWeight.Medium,
+                                            )
+                                        },
+                                        supportingContent = {
+                                            Text(
+                                                stringResource(R.string.sandbox_browse_files_desc),
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        },
+                                        leadingContent = {
+                                            Icon(
+                                                Icons.Default.Folder,
+                                                null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                            )
+                                        },
+                                        modifier = Modifier.clickable {
                                             try {
-                                                ctx.openSandboxHome()
+                                                ctx.openSandboxRoot()
                                             } catch (e: Exception) {
-                                                Log.w("SettingsSandboxPage", "Failed to open file manager", e)
+                                                DebugLog.w(
+                                                    "SettingsSandboxPage",
+                                                    "Failed to open sandbox root",
+                                                    e,
+                                                )
                                             }
-                                        }
+                                        },
+                                    )
+                                }
+                                add {
+                                    SettingsItem(
+                                        headlineContent = {
+                                            Text(stringResource(R.string.sandbox_shared_storage))
+                                        },
+                                        supportingContent = {
+                                            Text(
+                                                when {
+                                                    sharedStorageEnabled &&
+                                                        sharedStorageAccessGranted ->
+                                                        stringResource(
+                                                            R.string.sandbox_shared_storage_mounted,
+                                                        )
+                                                    sharedStorageEnabled ->
+                                                        stringResource(
+                                                            R.string.sandbox_shared_storage_permission_required,
+                                                        )
+                                                    else -> stringResource(
+                                                        R.string.sandbox_shared_storage_desc,
+                                                    )
+                                                },
+                                            )
+                                        },
+                                        leadingContent = {
+                                            Icon(
+                                                Icons.Default.SdStorage,
+                                                null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                            )
+                                        },
+                                        trailingContent = {
+                                            Switch(
+                                                checked = sharedStorageEnabled,
+                                                onCheckedChange = { enabled ->
+                                                    onSharedStorageEnabledChange(enabled)
+                                                    if (
+                                                        enabled &&
+                                                        !sharedStorageAccessGranted
+                                                    ) {
+                                                        requestSharedStorageAccess()
+                                                    }
+                                                },
+                                            )
+                                        },
+                                        modifier = Modifier.clickable {
+                                            val enabled = !sharedStorageEnabled
+                                            onSharedStorageEnabledChange(enabled)
+                                            if (enabled && !sharedStorageAccessGranted) {
+                                                requestSharedStorageAccess()
+                                            }
+                                        },
+                                    )
+                                }
+                                if (
+                                    sharedStorageEnabled &&
+                                    !sharedStorageAccessGranted
+                                ) {
+                                    add {
+                                        SettingsItem(
+                                            headlineContent = {
+                                                Text(
+                                                    stringResource(
+                                                        R.string.sandbox_shared_storage_grant,
+                                                    ),
+                                                )
+                                            },
+                                            supportingContent = {
+                                                Text(
+                                                    stringResource(
+                                                        R.string.sandbox_shared_storage_warning,
+                                                    ),
+                                                )
+                                            },
+                                            leadingContent = {
+                                                Icon(Icons.Default.AdminPanelSettings, null)
+                                            },
+                                            modifier = Modifier.clickable {
+                                                requestSharedStorageAccess()
+                                            },
+                                        )
                                     }
-                                )
-                            })
+                                }
+                            },
                         )
                     }
 
@@ -343,11 +479,28 @@ fun SettingsSandboxPage(sandboxManager: SandboxManager, onBack: () -> Unit, show
                                 // Terminal output (fixed-height, terminal theme, auto-scroll)
                                 AnimatedVisibility(
                                     visible = showTerminal && terminalOutput.isNotBlank(),
-                                    enter = expandVertically() + fadeIn(),
-                                    exit = shrinkVertically() + fadeOut()
+                                    enter = if (motionPolicy.allowSpatialTransitions) {
+                                        expandVertically() + fadeIn()
+                                    } else {
+                                        fadeIn()
+                                    },
+                                    exit = if (motionPolicy.allowSpatialTransitions) {
+                                        shrinkVertically() + fadeOut()
+                                    } else {
+                                        fadeOut()
+                                    },
                                 ) {
                                     val termScroll = rememberScrollState()
-                                    LaunchedEffect(terminalOutput) { termScroll.animateScrollTo(termScroll.maxValue) }
+                                    LaunchedEffect(
+                                        terminalOutput,
+                                        motionPolicy.allowProgrammaticScrollMotion,
+                                    ) {
+                                        if (motionPolicy.allowProgrammaticScrollMotion) {
+                                            termScroll.animateScrollTo(termScroll.maxValue)
+                                        } else {
+                                            termScroll.scrollTo(termScroll.maxValue)
+                                        }
+                                    }
                                     val terminalFg = MaterialTheme.colorScheme.onSurface
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
@@ -547,7 +700,7 @@ fun SettingsSandboxPage(sandboxManager: SandboxManager, onBack: () -> Unit, show
         AlertDialog(
             containerColor = MaterialTheme.colorScheme.surfaceContainer,
             onDismissRequest = { resetConfirm = false },
-            title = { Text(stringResource(R.string.sandbox_reset), fontWeight = FontWeight.Bold) },
+            title = { Text(stringResource(R.string.sandbox_reset_title), fontWeight = FontWeight.Bold) },
             text = { Text(stringResource(R.string.sandbox_reset_confirm)) },
             confirmButton = {
                 TextButton(

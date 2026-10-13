@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -18,8 +19,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.newoether.agora.R
-import com.newoether.agora.model.apiModelName
+import com.newoether.agora.data.modelAliasDisplayName
+import com.newoether.agora.data.modelDisplayName
+import com.newoether.agora.data.providerDisplayName
 import com.newoether.agora.viewmodel.ChatViewModel
+import com.newoether.agora.ui.components.optionClickable
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -27,8 +31,12 @@ fun SettingsTitleGenPage(viewModel: ChatViewModel, onBack: () -> Unit) {
     val titleGenEnabled by viewModel.settings.titleGenerationEnabled.collectAsState()
     val titleGenModel by viewModel.settings.titleGenerationModel.collectAsState()
     val titleGenPrompt by viewModel.settings.titleGenerationPrompt.collectAsState()
+    val titleGenNotificationsEnabled by
+        viewModel.settings.titleGenerationNotificationsEnabled.collectAsState()
     val modelAliases by viewModel.settings.modelAliases.collectAsState()
+    val modelProviderNames by viewModel.settings.modelProviderNames.collectAsState()
     val enabledModels by viewModel.settings.enabledModels.collectAsState()
+    val customProviders by viewModel.settings.customProviders.collectAsState()
     var showTitleModelDialog by remember { mutableStateOf(false) }
     var showPromptDialog by remember { mutableStateOf(false) }
     val showDocFab by viewModel.settings.showDocumentationFab.collectAsState()
@@ -59,8 +67,7 @@ fun SettingsTitleGenPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                     headlineContent = { Text(stringResource(R.string.title_gen_model)) },
                                     supportingContent = {
                                         val displayName = if (titleGenModel == null) stringResource(R.string.title_gen_current_model) else {
-                                            val alias = modelAliases[titleGenModel!!]
-                                            alias ?: com.newoether.agora.model.ModelId.parse(titleGenModel!!).apiModelName
+                                            modelDisplayName(titleGenModel!!, modelAliases, customProviders, modelProviderNames[titleGenModel] != false)
                                         }
                                         Text(displayName)
                                     },
@@ -68,6 +75,35 @@ fun SettingsTitleGenPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                     modifier = Modifier.clickable { showTitleModelDialog = true }
                                 )
                             }
+                        }
+                        add {
+                            SettingsItem(
+                                headlineContent = {
+                                    Text(stringResource(R.string.title_gen_notifications))
+                                },
+                                supportingContent = {
+                                    Text(stringResource(R.string.title_gen_notifications_desc))
+                                },
+                                leadingContent = {
+                                    Icon(
+                                        Icons.Default.Notifications,
+                                        null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                    )
+                                },
+                                trailingContent = {
+                                    Switch(
+                                        checked = titleGenNotificationsEnabled,
+                                        onCheckedChange =
+                                            viewModel.settings::setTitleGenerationNotificationsEnabled,
+                                    )
+                                },
+                                modifier = Modifier.clickable {
+                                    viewModel.settings.setTitleGenerationNotificationsEnabled(
+                                        !titleGenNotificationsEnabled,
+                                    )
+                                },
+                            )
                         }
                     }
                 )
@@ -103,26 +139,29 @@ fun SettingsTitleGenPage(viewModel: ChatViewModel, onBack: () -> Unit) {
                                     showTitleModelDialog = false
                                 })
                             },
-                            modifier = Modifier.clickable {
+                            modifier = Modifier.optionClickable {
                                 viewModel.settings.setTitleGenerationModel(null)
                                 showTitleModelDialog = false
                             }
                         )
                     }
-                    items(enabledModelsList) { model ->
-                        val alias = modelAliases[model]
+                    items(enabledModelsList, key = { it }) { model ->
                         val titleParsed = com.newoether.agora.model.ModelId.parse(model)
-                        val displayName = alias ?: titleParsed.apiModelName
+                        val displayName = modelAliasDisplayName(
+                            model,
+                            modelAliases,
+                            customProviders,
+                        )
                         SettingsItem(
                             headlineContent = { Text(displayName, fontWeight = if (titleGenModel == model) FontWeight.Bold else FontWeight.Normal) },
-                            supportingContent = { Text(titleParsed.providerName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)) },
+                            supportingContent = { Text(providerDisplayName(titleParsed.providerName, customProviders), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)) },
                             leadingContent = {
                                 RadioButton(selected = titleGenModel == model, onClick = {
                                     viewModel.settings.setTitleGenerationModel(model)
                                     showTitleModelDialog = false
                                 })
                             },
-                            modifier = Modifier.clickable {
+                            modifier = Modifier.optionClickable {
                                 viewModel.settings.setTitleGenerationModel(model)
                                 showTitleModelDialog = false
                             }

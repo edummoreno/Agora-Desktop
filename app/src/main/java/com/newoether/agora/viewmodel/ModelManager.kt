@@ -27,14 +27,14 @@ class ModelManager(
     }
 
     fun addLocalChatModel(config: LocalChatModelConfig) {
-        scope.launch {
+        scope.launch(Dispatchers.IO) {
             if (isLocalModelIdTaken(config.modelId)) return@launch
             val models = settings.localChatModels.value.toMutableList()
             models.add(config)
             settings.saveLocalChatModels(models)
             val modelPrefixedId = "Local:${config.modelId}"
             settings.setEnabledModels(settings.enabledModels.value + modelPrefixedId)
-            settings.saveModelAliases(settings.modelAliases.value + (modelPrefixedId to config.alias))
+            settings.updateStoredModelAlias(modelPrefixedId, config.alias)
         }
     }
 
@@ -52,7 +52,7 @@ class ModelManager(
             val updatedAvailable = settings.availableModels.first().toMutableMap()
             updatedAvailable[Constants.PROVIDER_LOCAL] = models.map { "${Constants.PROVIDER_LOCAL}:${it.modelId}" }
             settings.saveAvailableModels(Constants.PROVIDER_LOCAL, updatedAvailable[Constants.PROVIDER_LOCAL] ?: emptyList())
-            settings.saveModelAliases(settings.modelAliases.value - modelPrefixedId)
+            settings.updateStoredModelAlias(modelPrefixedId, "")
         }
     }
 
@@ -60,7 +60,7 @@ class ModelManager(
         uuid: String, newModelId: String, newAlias: String, nCtx: Int, temperature: Float, topP: Float, maxTokens: Int,
         mmprojPath: String = ""
     ) {
-        scope.launch {
+        scope.launch(Dispatchers.IO) {
             if (isLocalModelIdTaken(newModelId, excludeId = uuid)) return@launch
             val oldModel = settings.localChatModels.value.find { it.id == uuid } ?: return@launch
             if (oldModel.mmprojPath.isNotBlank() && oldModel.mmprojPath != mmprojPath) {
@@ -79,9 +79,10 @@ class ModelManager(
                 val avail = settings.availableModels.first().toMutableMap()
                 avail[Constants.PROVIDER_LOCAL] = models.map { "${Constants.PROVIDER_LOCAL}:${it.modelId}" }
                 settings.saveAvailableModels(Constants.PROVIDER_LOCAL, avail[Constants.PROVIDER_LOCAL] ?: emptyList())
-                settings.saveModelAliases(settings.modelAliases.value - oldPrefixed + (newPrefixed to newAlias))
+                settings.updateStoredModelAlias(oldPrefixed, "")
+                settings.updateStoredModelAlias(newPrefixed, newAlias)
             } else {
-                settings.saveModelAliases(settings.modelAliases.value + ("${Constants.PROVIDER_LOCAL}:$newModelId" to newAlias))
+                settings.updateStoredModelAlias("${Constants.PROVIDER_LOCAL}:$newModelId", newAlias)
             }
         }
     }
