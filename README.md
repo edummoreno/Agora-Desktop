@@ -1,6 +1,8 @@
 
 # FORK For Desktop Version
 
+- Objetivo é criar uma versão para desktop Windows.
+
 ---
 
 <div align="center">
