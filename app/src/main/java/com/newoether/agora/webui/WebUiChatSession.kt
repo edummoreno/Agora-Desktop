@@ -99,7 +99,7 @@ internal class WebUiChatSession(
     private val clients: ChatClients,
     private val conversations: ConversationRepository,
     private val registry: ConversationStateRegistry,
-    executionCoordinator: ConversationExecutionCoordinator,
+    private val executionCoordinator: ConversationExecutionCoordinator,
     private val settings: SettingsRepository,
     private val transfers: ConversationSettingsTransferCoordinator,
     attachmentProcessor: AttachmentImportProcessor,
@@ -334,6 +334,7 @@ internal class WebUiChatSession(
 
     /** The browser opened [conversationId] (null is a fresh New Chat page) with request [seq]. */
     suspend fun open(conversationId: String?, seq: Long) = ownerMutex.withLock {
+        branchTransitions.abortCurrent()
         if (conversationId == null) {
             newChatEntryId.incrementAndGet()
         } else {
@@ -348,25 +349,22 @@ internal class WebUiChatSession(
         retainOwnerLocked(conversationId ?: NEW_CHAT_WORKSPACE_ID)
     }
 
-    /**
-     * One row-level command: the browser names a row, and the phone's own owners decide the branch.
-     * [path] is the branch this connection is showing, because the phone resolves its generation
-     * boundary inside the rows the browser can actually see.
-     */
-    suspend fun rowCommand(command: WebSyncCommand, path: List<ChatMessage>) {
+    /** Admits identified row commands without holding the session lock across delete completion. */
+    suspend fun rowCommand(command: WebSyncCommand, path: List<ChatMessage>, reply: suspend (WebSyncEvent.RowAction) -> Unit = {}) {
         val opened = openTarget.value
-        if (opened.browserSeq != command.seq) return
+        if (opened.browserSeq != command.seq || opened.conversationId != command.conversationId) return
         val conversationId = opened.conversationId ?: return
-        val messageId = command.messageId ?: return
+        if (command.messageId == null) return
         val modelId = activeModel.value?.takeIf { it.first == conversationId }?.second.orEmpty()
-        val text = command.text.orEmpty()
-        when (command.type) {
-            "edit" -> if (modelId.isNotBlank() && text.isNotBlank()) generation.editMessage(this, conversationId,
-                messageId, text, modelId, path)
-            "regenerate" -> if (modelId.isNotBlank()) generation.regenerate(this, conversationId, messageId,
-                modelId, path)
-            "delete" -> generation.deleteMessage(this, conversationId, messageId, path)
-        }
+        if (command.type in setOf("branch", "delete") && !ownerMutex.withLock {
+            if (closed || target.value != opened || command.actionId <= actionId.value) false
+            else { actionId.value = command.actionId; true }
+        }) return
+        dispatchWebUiRowCommand(this, command, path, conversationId, modelId,
+            generation, conversations, registry, executionCoordinator, ownerMutex,
+            isCurrent = { !closed && (target.value == opened || command.type == "delete" &&
+                target.value == OpenTarget(null, opened.browserSeq, movedByServer = true)) },
+            editorCommand = ::editorCommand, reply = reply)
     }
 
     /** Applies one ordered browser edit to the canonical composer owner. */
@@ -447,9 +445,13 @@ internal class WebUiChatSession(
                 } finally { actionId.value = command.actionId }
                 return@withLock null
             }
-            if (command.type != "compact") return@withLock null
+            if (command.type !in listOf("compact", "recompact")) return@withLock null
             val id = openId.value
-            val request = command.retainCount?.let { CompactRequest(command.modelId.orEmpty(), command.text.orEmpty(), it,
+            val request = if (command.type == "recompact") command.messageId?.let { CompactRequest(
+                settings.contextCompactModel.value?.takeIf(String::isNotBlank) ?: activeModel.value?.takeIf { it.first == id }?.second.orEmpty(),
+                settings.contextCompactPrompt.value, settings.contextCompactRetainCount.value, replaceMessageId = it,
+                preserveSystemPrompt = settings.contextCompactPreserveSystemPrompt.value,
+            ) } else command.retainCount?.let { CompactRequest(command.modelId.orEmpty(), command.text.orEmpty(), it,
                 preserveSystemPrompt = settings.contextCompactPreserveSystemPrompt.value) }
             if (id == null || request == null || request.model !in validModels.value.orEmpty() || request.prompt.isBlank() ||
                 request.retainLogicalMessages < 0 || registry.getOrCreate(id).stopping.value ||
@@ -666,6 +668,7 @@ internal class WebUiChatSession(
     suspend fun endUploads() = ownerMutex.withLock { closed = true }
     /** Connection children settle before this call, so no importer or Send outlives reclamation. */
     suspend fun close() = withContext(NonCancellable) {
+        branchTransitions.abortCurrent()
         clients.detach(this@WebUiChatSession)
         ownerMutex.withLock {
             closed = true

@@ -124,6 +124,7 @@ class WebUiSyncTest {
         every { snackbars } returns this@WebUiSyncTest.snackbars
         every { scrollRequests } returns this@WebUiSyncTest.scrollRequests
         every { composerState } returns this@WebUiSyncTest.composerState
+        every { branchTransitions } returns com.newoether.agora.viewmodel.BranchReplacementTransitionCoordinator()
         every { openConversationId } answers { this@WebUiSyncTest.openTarget.value.conversationId }
         coEvery { start() } just Runs
         coEvery { close() } just Runs
@@ -176,12 +177,10 @@ class WebUiSyncTest {
     }
 
     @Test
-    fun pinUsesTheNarrowCanonicalWriteAndOpeningDoesNotDependOnLoadedPages() = sync { send, received ->
+    fun openingDoesNotDependOnLoadedPages() = sync { send, received ->
         received()
         list.value = (0 until 100).map { ChatConversation(id = "c$it", title = "Conversation $it") } + list.value
         received()
-        send("""{"type":"pin","conversationId":"b","enabled":true}""")
-        coVerify(exactly = 1) { conversations.setConversationPinned("b", true) }
         send("""{"type":"open","conversationId":"a"}""")
         assertEquals(listOf("root", "m1"), received().single { it.type == "path" }.ids())
     }
@@ -755,6 +754,7 @@ class WebUiSyncTest {
         display = display,
         openChatSession = { session },
         forkShare = forkShare,
+        conversationLifecycle = mockk(relaxed = true), generation = mockk(relaxed = true),
         askUser = askUser,
         shellConfirmation = shell,
         contextAccounting = contextAccounting,

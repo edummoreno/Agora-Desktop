@@ -49,6 +49,35 @@ class WebUiMessagePresentationTest {
         )
 
     @Test
+    fun branchWireUsesTheCanonicalUserEditAndAssistantRegenerationProjection() {
+        val user = ChatMessage(id = "u", text = "input", participant = Participant.USER, timestamp = 1, runId = "r1")
+        val edited = user.copy(id = "edited", timestamp = 2, runId = "r2")
+        val first = user.copy(id = "m", parentId = "u", participant = Participant.MODEL, timestamp = 3)
+        val regenerated = first.copy(id = "regen", timestamp = 4, runId = "r3")
+        val final = first.copy(id = "final", parentId = "m", timestamp = 5)
+        val path = listOf(user, first, final)
+        val graph = listOf(user, edited, first, regenerated, final)
+        val projected = com.newoether.agora.model.RunUiProjection.project(path, graph)
+        val wire = path.map { it.toWebPathEntry(projected[it.id]) }
+        assertTrue(wire[0].showBranchSelector)
+        assertEquals(2, wire[0].totalBranches)
+        assertEquals("u", wire[0].branchAnchorMessageId)
+        assertTrue(!wire[1].showBranchSelector)
+        assertTrue(wire[2].showBranchSelector)
+        assertEquals("m", wire[2].branchAnchorMessageId)
+        assertEquals("u", wire[2].branchAnchorParentId)
+        assertEquals(2, wire[2].totalBranches)
+        val encoded = WebUiSync.json.encodeToString(WebPathEntry.serializer(), wire[2])
+        assertEquals(wire[2], WebUiSync.json.decodeFromString(WebPathEntry.serializer(), encoded))
+        val fields = WebUiSync.json.parseToJsonElement(encoded) as kotlinx.serialization.json.JsonObject
+        assertEquals("0", fields.getValue("branchIndex").toString())
+        assertEquals("2", fields.getValue("totalBranches").toString())
+        val last = WebUiSync.json.encodeToString(WebPathEntry.serializer(), wire[2].copy(branchIndex = 1))
+        assertEquals("1", (WebUiSync.json.parseToJsonElement(last) as kotlinx.serialization.json.JsonObject)
+            .getValue("branchIndex").toString())
+    }
+
+    @Test
     fun `live thinking group carries a timer base and loading icon`() {
         val message = model(
             MessageStatus.THINKING,
@@ -206,6 +235,7 @@ class WebUiMessagePresentationTest {
         val session = io.mockk.mockk<WebUiChatSession>(relaxed = true)
         io.mockk.every { session.openTarget } returns kotlinx.coroutines.flow.MutableStateFlow(WebUiChatSession.OpenTarget("c", 0, false))
         io.mockk.every { session.composerState } returns kotlinx.coroutines.flow.emptyFlow()
+        io.mockk.every { session.branchTransitions } returns com.newoether.agora.viewmodel.BranchReplacementTransitionCoordinator()
         io.mockk.every { session.snackbars } returns kotlinx.coroutines.flow.MutableSharedFlow<String>()
         io.mockk.every { session.scrollRequests } returns kotlinx.coroutines.flow.MutableSharedFlow<WebSyncEvent.ScrollToBottom>()
         val providers = kotlinx.coroutines.flow.MutableStateFlow(emptyList<com.newoether.agora.data.CustomProviderConfig>())
@@ -213,7 +243,7 @@ class WebUiMessagePresentationTest {
             kotlinx.coroutines.flow.MutableStateFlow(90), kotlinx.coroutines.flow.MutableStateFlow(true))
         val owner = WebUiSync(repository, registry, com.newoether.agora.automation.ConversationExecutionCoordinator(),
             hydration, providers, kotlinx.coroutines.flow.flowOf(display(toolMode = ToolCallDisplayModes.COMPACT)), { session },
-            io.mockk.mockk(), com.newoether.agora.viewmodel.AskUserController(),
+            io.mockk.mockk(), io.mockk.mockk(), io.mockk.mockk(), com.newoether.agora.viewmodel.AskUserController(),
             com.newoether.agora.viewmodel.ShellConfirmationController(kotlinx.coroutines.flow.MutableStateFlow(true), {}),
             accounting, { emptyList() }, kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
         val incoming = kotlinx.coroutines.channels.Channel<String>(kotlinx.coroutines.channels.Channel.UNLIMITED)
