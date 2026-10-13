@@ -1,10 +1,12 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "./vendor/preact-hooks.mjs";
-import { html } from "./html.js";
+import { html, useDialog } from "./html.js";
 import { CircularProgress } from "./material/progress.js";
+import { attachScrollbar } from "./material/scrollbar.js";
 import { t } from "./i18n.js";
 import {
   icon, ICON_ADD,
-  ICON_MENU, ICON_MORE_VERT, ICON_REPEAT, ICON_SEARCH, ICON_PIN,
+  ICON_MENU, ICON_MORE_VERT, ICON_SEARCH, ICON_PIN, ICON_CLOSE,
+  ICON_DELETE, ICON_EDIT, ICON_REFRESH,
   ICON_ARROW_BACK, ICON_CHEVRON_DOWN,
 } from "./icons.js";
 import { MoreMenu } from "./menu.js";
@@ -18,6 +20,9 @@ import { Composer } from "./composer.js";
  */
 // ChatDrawerHost.usesSideBySideDrawer: wider than DRAWER_MAX_WIDTH (360) + CHAT_APP_WIDTH_THRESHOLD (600).
 const SIDE_BY_SIDE_QUERY = "(min-width: 960.02px)";
+// DrawerPinned is the persisted wide-window preference; the narrow window never reads or writes it.
+const DRAWER_PINNED_KEY = "agora.drawerPinned";
+const readDrawerPinned = () => { try { return localStorage.getItem(DRAWER_PINNED_KEY) === "true"; } catch (_) { return false; } };
 
 function useMediaQuery(query) {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
@@ -62,13 +67,16 @@ function ConversationRow({ conversation, selected, onSelect, onMenu }) {
     </div>`;
 }
 
-/** ChatDrawerContent: title, search, Tasks, New Chat, then the conversation list. */
+/** ChatDrawerContent: title, search, New Chat, then the conversation list. */
 function DrawerContent({ conversations, openId, onSelect, connected, loading, hasMore, reduceMotion,
-  searchQuery, searchResults, searchLoading, searchFailed }) {
+  searchQuery, searchResults, searchLoading, searchFailed, onRequestRename, onRequestDelete, switching }) {
   const searching = !!searchQuery.trim();
-  const list = useRef(null), focusIndex = useRef(null);
+  const list = useRef(null), bar = useRef(null), focusIndex = useRef(null);
   const [viewport, setViewport] = useState({ top: 0, height: 500 });
   const [menu, setMenu] = useState(null), [menuOpen, setMenuOpen] = useState(false);
+  // Chrome runs no CSS transition on its own scrollbar, so this list draws its bar beside the native
+  // gutter through the same owner the chat uses. The gutter itself stays and keeps every hit target.
+  useEffect(() => attachScrollbar(list.current, bar.current), []);
   const rows = useMemo(() => {
     const pinned = conversations.filter(item => item.isPinned);
     const ordinary = conversations.filter(item => !item.isPinned);
@@ -130,14 +138,18 @@ function DrawerContent({ conversations, openId, onSelect, connected, loading, ha
     <h2 class="drawer-title">${t.conversations}</h2>
     <div class="drawer-search">
       ${icon(ICON_SEARCH)}
-      <input type="search" placeholder=${t.searchHint} aria-label=${t.searchHint} disabled=${!connected}
+      <input type="text" enterkeyhint="search" placeholder=${t.searchHint} aria-label=${t.searchHint} disabled=${!connected}
         value=${searchQuery} onInput=${event => sync.search(event.currentTarget.value)} />
-      <span class="drawer-search-progress" data-active=${searchLoading} aria-hidden=${!searchLoading}>
-        <${CircularProgress} size=${18} stroke=${2} label=${t.loading} />
+      <span class="drawer-search-trailing">
+        <span class="drawer-search-progress" data-active=${searchLoading} aria-hidden=${!searchLoading}>
+          <${CircularProgress} size=${18} stroke=${2} label=${t.loading} />
+        </span>
+        <button class="drawer-search-clear" type="button" aria-label=${t.clearSearch}
+          data-active=${!!searchQuery && !searchLoading} disabled=${!searchQuery || searchLoading}
+          onClick=${() => sync.search("")}>${icon(ICON_CLOSE)}</button>
       </span>
     </div>
     ${!searching && html`
-    <${DrawerButton} className="tonal tasks" iconPath=${ICON_REPEAT} label=${t.tasks} />
     <${DrawerButton} className="filled new-chat" iconPath=${ICON_ADD} label=${t.newChat}
       disabled=${!connected} onClick=${() => onSelect(null)} />
     `}
@@ -162,11 +174,25 @@ function DrawerContent({ conversations, openId, onSelect, connected, loading, ha
       ${loading && html`<div class="drawer-list-progress"><${CircularProgress} size=${32} stroke=${3} label=${t.loading} /></div>`}
       `}
     </div>
+    <div class="scrollbar-overlay drawer-scrollbar" ref=${bar} aria-hidden="true"><span></span></div>
     ${menu && html`<${MoreMenu} expanded=${menuOpen} reduceMotion=${reduceMotion} anchor=${{ current: menu.anchor }}
       onClose=${() => setMenuOpen(false)} onExited=${() => setMenu(null)}>
-      <button class="dropdown-item" role="menuitem" type="button" disabled=${!connected}
+      <button class="dropdown-item" role="menuitem" type="button" disabled=${!connected || switching || menu.conversation.generating}
         onClick=${() => { sync.pin(menu.conversation.id, !menu.conversation.isPinned); setMenuOpen(false); }}>
         ${icon(ICON_PIN)}<span>${menu.conversation.isPinned ? t.unpin : t.pin}</span>
+      </button>
+      <button class="dropdown-item" role="menuitem" type="button"
+        disabled=${!connected || switching || menu.conversation.generating}
+        onClick=${() => { sync.generateTitle(menu.conversation.id); setMenuOpen(false); }}>
+        ${icon(ICON_REFRESH)}<span>${t.generateTitle}</span>
+      </button>
+      <button class="dropdown-item" role="menuitem" type="button" disabled=${!connected || switching || menu.conversation.generating}
+        onClick=${() => { onRequestRename({ conversationId: menu.conversation.id, title: menu.conversation.title, anchor: menu.anchor }); setMenuOpen(false); }}>
+        ${icon(ICON_EDIT)}<span>${t.rename}</span>
+      </button>
+      <button class="dropdown-item destructive" role="menuitem" type="button" disabled=${!connected || switching || menu.conversation.generating}
+        onClick=${() => { onRequestDelete({ conversationId: menu.conversation.id, title: menu.conversation.title, anchor: menu.anchor }); setMenuOpen(false); }}>
+        ${icon(ICON_DELETE)}<span>${t.delete}</span>
       </button>
     </${MoreMenu}>`}`;
 }
@@ -175,16 +201,24 @@ function DrawerContent({ conversations, openId, onSelect, connected, loading, ha
  * ChatTopBar: title capsule (menu + brand, or the conversation title at conversationTitleSolo)
  * and actions capsule (new chat + more).
  */
-function TopBar({ title, conversationId, drawerOpen, onToggleDrawer, menuButton, reduceMotion, onSignedOut, connected, onFork, onShare, pageBusy, onSystemPrompt, promptEnabled, search, generating }) {
+function TopBar({ title, subtitle, conversationId, drawerOpen, onToggleDrawer, menuButton, reduceMotion, onSignedOut, connected, onFork, onShare, pageBusy, onSystemPrompt, promptEnabled, search, generating }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [retainedMenu, setRetainedMenu] = useState(false);
   const moreButton = useRef(null);
   const searchField = useRef(null);
   useLayoutEffect(() => { if (search) searchField.current?.focus(); }, [!!search]);
   const titleIdentity = title ? JSON.stringify([conversationId, title]) : "brand";
-  const [titleFrames, setTitleFrames] = useState([{ identity: titleIdentity, title, initialAlpha: 1 }]);
-  const presentations = titleFrames.some((frame) => frame.identity === titleIdentity) ? titleFrames
-    : [...titleFrames, { identity: titleIdentity, title, initialAlpha: 0 }];
+  const titled = titleFrames => {
+    if (!titleFrames.some(frame => frame.identity === titleIdentity)) {
+      return [...titleFrames, { identity: titleIdentity, title, subtitle, initialAlpha: 0 }];
+    }
+    // The token figure arrives on its own, so the frame of the title that is showing takes it
+    // without restarting the crossfade; every other frame keeps what it had while it fades out.
+    return titleFrames.every(frame => frame.subtitle === subtitle) ? titleFrames
+      : titleFrames.map(frame => frame.identity === titleIdentity ? { ...frame, subtitle } : frame);
+  };
+  const [titleFrames, setTitleFrames] = useState([{ identity: titleIdentity, title, subtitle, initialAlpha: 1 }]);
+  const presentations = titled(titleFrames);
   const titleCanvas = useRef(null);
   const titleClip = useRef({ identity: null, target: 0, deadline: 0, animation: null });
   const titleFade = useRef({ identity: titleIdentity, animations: new Map() });
@@ -259,7 +293,7 @@ function TopBar({ title, conversationId, drawerOpen, onToggleDrawer, menuButton,
         labels.forEach((node) => { node.style.opacity = node === label ? "1" : "0"; });
         fade.animations.forEach((owned) => owned.cancel());
         fade.animations.clear();
-        setTitleFrames([{ identity, title, initialAlpha: 1 }]);
+        setTitleFrames([{ identity, title, subtitle, initialAlpha: 1 }]);
       };
     }
   }, [titleIdentity, !!search]);
@@ -297,9 +331,10 @@ function TopBar({ title, conversationId, drawerOpen, onToggleDrawer, menuButton,
             </button>
             <div class="title-labels">
               ${presentations.map((frame) => html`<h1 key=${frame.identity}
-                class=${frame.title ? "conversation-bar-title" : "brand-title"}
+                class=${frame.title ? (frame.subtitle ? "conversation-bar-title has-subtitle" : "conversation-bar-title") : "brand-title"}
                 data-title-identity=${frame.identity} aria-hidden=${frame.identity === titleIdentity ? null : "true"}
-                style=${{ opacity: frame.initialAlpha }}>${frame.title || t.title}</h1>`)}
+                style=${{ opacity: frame.initialAlpha }}><span class="title-text">${frame.title || t.title}</span>${frame.subtitle &&
+                  html`<span class="conversation-subtitle">${frame.subtitle}</span>`}</h1>`)}
             </div>
           </div>
         </div>
@@ -332,9 +367,13 @@ function TopBar({ title, conversationId, drawerOpen, onToggleDrawer, menuButton,
  * The drawer overlays the chat with a scrim up to 960 px; wider, it sits beside the chat and the
  * chat narrows, as the app's side-by-side drawer. Both start closed and open from the menu button.
  */
-function ConversationDialog({ state, request, onClose }) {
+function ConversationDialog({ state, request, onClose: onClosed }) {
   const dialog = useRef(null);
   const returnFocus = useRef(document.querySelector('.actions-capsule [aria-haspopup="menu"]'));
+  const onClose = useDialog(dialog, () => {
+    if (sent.current) sync.confirmationExited(sent.current.actionId);
+    sync.dismissShare(); onClosed();
+  }, returnFocus);
   const sent = useRef(false);
   const busy = !!state.pageAction;
   const sharing = request.type === "share";
@@ -344,14 +383,9 @@ function ConversationDialog({ state, request, onClose }) {
   useEffect(() => { setSelectedPromptId(prompt?.selectedId ?? null); }, [prompt?.selectedId]);
   const activeTitle = prompt?.items.find(item => item.id === prompt.activeId)?.title || t.noSystemPrompt;
   const heading = picking ? t.systemPrompt : sharing ? t.share
-    : request.messageId == null ? t.forkConversation : t.forkFromHere;
+    : request.messageId == null ? t.forkConversationTitle : t.forkFromHere;
   const text = state.shareText;
-  function close() { if (!busy && !sent.current) { sync.dismissShare(); onClose(); } }
-  useLayoutEffect(() => {
-    const node = dialog.current;
-    node.showModal();
-    return () => { node.close(); if (returnFocus.current?.isConnected) returnFocus.current.focus(); };
-  }, []);
+  function close() { if (!busy && !sent.current) onClose(); }
   useEffect(() => {
     if (sent.current && state.pageResult?.actionId === sent.current.actionId) onClose();
   }, [state.pageResult]);
@@ -367,14 +401,14 @@ function ConversationDialog({ state, request, onClose }) {
     link.click();
     URL.revokeObjectURL(url);
   }
-  return html`<dialog ref=${dialog} class="attachment-editor page-dialog" aria-label=${heading}
+  return html`<dialog ref=${dialog} class=${`attachment-editor page-dialog ${picking ? "prompt-dialog" : ""}`} aria-label=${heading}
     onCancel=${event => { event.preventDefault(); close(); }}
     onClick=${event => { if (event.target === dialog.current) close(); }} onKeyDown=${event => event.stopPropagation()}>
     <section><h2>${heading}</h2>
       ${picking ? html`<div class="prompt-options" role="radiogroup" aria-label=${t.systemPrompt}>
         ${[{ id: null, title: t.globalDefault(activeTitle) }, ...(prompt?.items || [])].map(item => html`
-          <label class="prompt-option"><input type="radio" name="system-prompt" checked=${selectedPromptId === item.id}
-            onChange=${() => setSelectedPromptId(item.id)} /><span>${item.title}</span></label>`)}
+          <label class="prompt-option"><span class="prompt-radio"><input type="radio" name="system-prompt" checked=${selectedPromptId === item.id}
+            onChange=${() => setSelectedPromptId(item.id)} /></span><span>${item.title}</span></label>`)}
       </div>` : sharing ? (text ? html`<textarea class="share-output" readonly aria-label=${t.share}>${text}</textarea>`
         : html`<${CircularProgress} size=${24} label=${t.loading} />`)
         : html`<p>${t.forkConfirm}</p>`}
@@ -385,24 +419,135 @@ function ConversationDialog({ state, request, onClose }) {
           }}>${t.save}</button>` : sharing ? text && html`<button type="button" onClick=${copy}>${t.copy}</button><button type="button" onClick=${download}>${t.download}</button>`
           : html`<button type="button" disabled=${busy} onClick=${() => {
             if (sent.current) return;
-            sent.current = sync.pageCommand("fork", request);
+            sent.current = sync.pageCommand("fork", request,
+              request.messageId == null ? {} : { messageId: request.messageId });
             if (!sent.current) onClose();
-          }}>${busy ? html`<${CircularProgress} size=${20} label=${t.loading} />` : t.fork}</button>`}
+          }}>${busy ? html`<${CircularProgress} size=${20} stroke=${3} label=${t.loading} />` : t.fork}</button>`}
       </footer>
+    </section></dialog>`;
+}
+
+/**
+ * ChatRenameDialog: the field opens on the stored title and an untouched Save keeps it, so a title
+ * the browser never edited is never written back over the stored one.
+ */
+function ConversationRenameDialog({ conversation, onClose: onClosed }) {
+  const dialog = useRef(null);
+  const returnFocus = useRef(conversation.anchor);
+  const onClose = useDialog(dialog, onClosed, returnFocus);
+  const field = useRef(null);
+  const edited = useRef(false);
+  useLayoutEffect(() => {
+    field.current.value = conversation.title;
+    field.current.focus();
+  }, []);
+  function save() {
+    if (edited.current) sync.renameConversation(conversation.conversationId, field.current.value);
+    onClose();
+  }
+  return html`<dialog ref=${dialog} class="attachment-editor page-dialog" aria-label=${t.renameChat}
+    onCancel=${event => { event.preventDefault(); onClose(); }}
+    onClick=${event => { if (event.target === dialog.current) onClose(); }} onKeyDown=${event => event.stopPropagation()}>
+    <section><h2>${t.renameChat}</h2>
+      <input class="rename-field" type="text" ref=${field} aria-label=${t.renameChat}
+        onInput=${() => { edited.current = true; }}
+        onKeyDown=${event => { if (event.key === "Enter") { event.preventDefault(); save(); } }} />
+      <footer><button type="button" onClick=${onClose}>${t.cancel}</button>
+        <button type="button" onClick=${save}>${t.save}</button></footer>
+    </section></dialog>`;
+}
+
+/**
+ * ChatDeleteConfirmDialog: CONFIRM, then PENDING while the phone's owner runs its transaction, then
+ * FAILED when it refuses. A pending delete cannot be dismissed, so the dialog cannot outlive it.
+ */
+function ConversationDeleteDialog({ pending, failed, complete, actionId, onConfirm, onClose: onClosed }) {
+  const dialog = useRef(null);
+  const onClose = useDialog(dialog, () => { sync.confirmationExited(actionId); onClosed(); });
+  useEffect(() => { if (complete) onClose(); }, [complete]);
+  function close() { if (!pending) onClose(); }
+  return html`<dialog ref=${dialog} class="attachment-editor page-dialog" aria-label=${t.deleteChat}
+    onCancel=${event => { event.preventDefault(); close(); }}
+    onClick=${event => { if (event.target === dialog.current) close(); }} onKeyDown=${event => event.stopPropagation()}>
+    <section><h2>${t.deleteChat}</h2><p>${t.deleteChatConfirm}</p>
+      ${failed && html`<p class="dialog-failure" role="alert">${t.toolStateFailed}</p>`}
+      <footer><button type="button" disabled=${pending} onClick=${close}>${t.cancel}</button>
+        <button class="destructive" type="button" disabled=${pending} onClick=${onConfirm}>
+          ${pending ? html`<${CircularProgress} size=${20} stroke=${3} label=${t.loading} />` : failed ? t.retry : t.delete}
+        </button></footer>
     </section></dialog>`;
 }
 
 export function Shell({ onSignedOut }) {
   const state = useSync();
+  const snackbarNode = useRef(null);
+  const snackbarMotion = useRef(null);
+  const nextSnackbar = useRef(state.snackbar);
+  nextSnackbar.current = state.snackbar;
+  const [snackbar, setSnackbar] = useState(null);
+  const [snackbarVisible, setSnackbarVisible] = useState(false);
+  useEffect(() => {
+    let handoff;
+    if (state.snackbar) {
+      if (snackbar && snackbarVisible) {
+        setSnackbarVisible(false);
+        // MainActivity replaces the retained payload halfway through its 400 ms exit.
+        handoff = setTimeout(() => {
+          setSnackbar(state.snackbar);
+          setSnackbarVisible(true);
+        }, 200);
+      } else {
+        setSnackbar(state.snackbar);
+        setSnackbarVisible(true);
+      }
+    } else setSnackbarVisible(false);
+    return () => clearTimeout(handoff);
+  }, [state.snackbar?.id]);
+  useEffect(() => {
+    if (!snackbar) return;
+    const timer = setTimeout(() => sync.dismissSnackbar(snackbar.id), 4_000);
+    return () => clearTimeout(timer);
+  }, [snackbar?.id]);
+  useLayoutEffect(() => {
+    const node = snackbarNode.current;
+    if (!node) return;
+    const reduced = !!state.display?.reduceMotion;
+    const previous = snackbarMotion.current;
+    const samePayload = previous?.id === snackbar.id;
+    const style = getComputedStyle(node);
+    const from = samePayload ? { opacity: style.opacity, transform: style.transform }
+      : { opacity: 0, transform: reduced ? "none" : "scale(.8)" };
+    previous?.animation.cancel();
+    const target = { opacity: snackbarVisible ? 1 : 0,
+      transform: reduced ? "none" : `scale(${snackbarVisible ? 1 : .8})` };
+    const animation = node.animate([from, target], {
+      duration: 400, easing: "cubic-bezier(.4,0,.2,1)", fill: "both",
+    });
+    snackbarMotion.current = { id: snackbar.id, animation };
+    animation.finished.then(() => {
+      if (!snackbarVisible && snackbarMotion.current?.animation === animation && !nextSnackbar.current) {
+        setSnackbar(null);
+      }
+    }).catch(() => {});
+  }, [snackbar?.id, snackbarVisible, state.display?.reduceMotion]);
+  useLayoutEffect(() => () => snackbarMotion.current?.animation.cancel(), []);
   useEffect(() => {
     sync.start(onSignedOut);
     return () => sync.stop();
   }, []);
   const sideBySide = useMediaQuery(SIDE_BY_SIDE_QUERY);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerPinned, setDrawerPinned] = useState(readDrawerPinned);
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [pageDialog, setPageDialog] = useState(null);
-  useEffect(() => { setPageDialog(null); }, [state.connectionId, state.openId]);
+  // The drawer row menu's own dialogs, held here as on the phone they outlive the drawer itself.
+  const [rowDialog, setRowDialog] = useState(null);
+  const deleteResult = state.conversationDeleteResult;
+  useEffect(() => {
+    if (pageDialog && (pageDialog.connectionId !== state.connectionId ||
+        pageDialog.seq !== sync.interactionTarget()?.seq ||
+        (pageDialog.conversationId !== state.openId && !state.switching?.confirmation))) setPageDialog(null);
+  }, [state.connectionId, state.openId, state.switching, pageDialog]);
   useEffect(() => { if (pageDialog?.type === "share" && !state.pageAction && !state.shareText) setPageDialog(null); }, [state.pageAction, state.shareText]);
   // A row names the message it forks or shares; the top bar names none and so acts on the whole
   // conversation, which is what the phone's owners do with a null message id.
@@ -413,6 +558,7 @@ export function Shell({ onSignedOut }) {
   }
   const shell = useRef(null);
   const drawerTarget = useRef(0);
+  const previousWide = useRef(null);
   const drawerAnimation = useRef(null);
   const drawerDrag = useRef(null);
   const dragClick = useRef(null);
@@ -553,12 +699,30 @@ export function Shell({ onSignedOut }) {
     };
   }, [sideBySide, reduceMotion]);
   useEffect(() => () => { drawerAnimation.current?.cancel(); cancelAnimationFrame(drawerFrame.current); }, []);
+  // Wide/narrow state machine: entering wide restores the expansion from the persisted pin,
+  // entering narrow always collapses the overlay and leaves the pin untouched. A same-mode
+  // re-run (motion setting change) just re-settles at the current expansion.
   useLayoutEffect(() => {
     endDrawerDrag(null, true);
-    settleDrawer(drawerTarget.current > 0);
+    const was = previousWide.current;
+    previousWide.current = sideBySide;
+    if (was === null) {
+      const open = sideBySide && readDrawerPinned();
+      drawerTarget.current = open ? 1 : 0;
+      shell.current.style.setProperty("--drawer-progress", open ? "1" : "0");
+      setDrawerOpen(open);
+      return;
+    }
+    if (was === sideBySide) { settleDrawer(drawerTarget.current > 0); return; }
+    settleDrawer(sideBySide && readDrawerPinned());
   }, [sideBySide, reduceMotion]);
   // ChatTopBar falls back to the brand while the title is blank.
   const openTitle = state.conversations.find((c) => c.id === state.openId)?.title?.trim() || null;
+  // ChatTopBar stacks the token subtitle under a conversation title and hides it with the brand
+  // title, or while there is nothing in the window yet (`contextAvailable = totalTokens > 0`). The
+  // figure is the composer ring's own: this connection's projection, kept while the next one prices.
+  const contextSubtitle = openTitle && (state.context?.estimatedTokens ?? 0) > 0
+    ? t.contextUsage(state.context.estimatedLabel, state.context.budgetLabel) : null;
 
   useLayoutEffect(() => {
     // The chat is inert until the closed state renders, so focus returns to the menu button here.
@@ -567,13 +731,11 @@ export function Shell({ onSignedOut }) {
     const enteringModal = modalOpen && !wasModalOpen.current;
     wasModalOpen.current = modalOpen;
     if (!modalOpen) return undefined;
-    // The dialog itself takes focus while none of its controls is enabled yet.
-    if (enteringModal) {
-      (drawer.current?.querySelector("input:not([disabled]), button:not([disabled])") ?? drawer.current)
-        ?.focus();
-    }
+    // The panel itself takes focus on entry; focusing a control here would focus the search
+    // field first, which on a phone opens the soft keyboard without the user asking for it.
+    if (enteringModal) drawer.current?.focus();
     const onKey = (event) => {
-      if (event.defaultPrevented || shell.current.querySelector(".detail-sheet-layer, .dropdown")) return;
+      if (event.defaultPrevented || shell.current.querySelector(".detail-sheet-layer, .dropdown, dialog[open]")) return;
       if (event.key === "Escape") { event.preventDefault(); settleDrawer(false); }
       if (event.key === "Tab") {
         const controls = [...drawer.current.querySelectorAll("input:not([disabled]), button:not([disabled])")];
@@ -606,23 +768,50 @@ export function Shell({ onSignedOut }) {
         inert=${!drawerOpen}>
         <${DrawerContent} conversations=${state.conversations} openId=${state.openId}
           connected=${state.connected} loading=${state.listLoading} hasMore=${state.listHasMore} reduceMotion=${reduceMotion}
+          switching=${!!state.switching || state.openStatus === "loading"}
           searchQuery=${state.searchQuery} searchResults=${state.searchResults} searchLoading=${state.searchLoading} searchFailed=${state.searchFailed}
+          onRequestRename=${(request) => setRowDialog({ ...request, type: "rename" })}
+          onRequestDelete=${(request) => setRowDialog({ ...request, type: "delete" })}
           onSelect=${(id) => { sync.open(id); if (!sideBySide) settleDrawer(false); }} />
       </aside>
       <div class="scrim" aria-hidden="true" onClick=${() => settleDrawer(false)}></div>
       <main class=${`chat ${composerExpanded ? "chat-composer-expanded" : ""}`} inert=${modalOpen}>
-        <${TopBar} title=${openTitle} conversationId=${state.openId} drawerOpen=${drawerOpen} menuButton=${menuButton} reduceMotion=${reduceMotion} onSignedOut=${onSignedOut} connected=${state.connected}
+        <${TopBar} title=${openTitle} subtitle=${contextSubtitle} conversationId=${state.openId} drawerOpen=${drawerOpen} menuButton=${menuButton} reduceMotion=${reduceMotion} onSignedOut=${onSignedOut} connected=${state.connected}
           generating=${!!state.generating}
           search=${state.conversationSearch}
           onSystemPrompt=${() => openPageAction("system_prompt")}
           promptEnabled=${state.connected && !!state.composer?.systemPrompt && !state.composer?.controls?.lowContextModeEnabled && !state.pendingAction}
           onFork=${() => openPageAction("fork")} onShare=${() => openPageAction("share")} pageBusy=${!!state.pageAction}
-          onToggleDrawer=${() => settleDrawer(drawerTarget.current === 0)} />
+          onToggleDrawer=${() => {
+            if (!sideBySide) { settleDrawer(drawerTarget.current === 0); return; }
+            // In the wide window the button toggles the persisted pin, not a temporary overlay.
+            const next = !drawerPinned;
+            setDrawerPinned(next);
+            try { localStorage.setItem(DRAWER_PINNED_KEY, String(next)); } catch (_) {}
+            settleDrawer(next);
+          }} />
         <${MessageList} state=${state} label=${openTitle || t.newChat} onPageAction=${openPageAction} />
         <div class="chat-top-blur" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
         <${Composer} state=${state} MoreMenu=${MoreMenu} expanded=${composerExpanded} onExpandedChange=${setComposerExpanded} />
-        ${state.snackbar && html`<div class="chat-snackbar" role="status">${state.snackbar.message}</div>`}
+        ${snackbar && html`<div class="chat-snackbar-host" inert=${!snackbarVisible}>
+          <div class="chat-snackbar" ref=${snackbarNode} role=${snackbarVisible ? "status" : null}
+            aria-hidden=${!snackbarVisible}>
+            <span class="chat-snackbar-text">${snackbar.message}</span>
+            <button class="chat-snackbar-close" type="button" aria-label=${t.cancel}
+              onClick=${() => sync.dismissSnackbar(snackbar.id)}>${icon(ICON_CLOSE)}</button>
+          </div></div>`}
         ${pageDialog && html`<${ConversationDialog} state=${state} request=${pageDialog} onClose=${() => setPageDialog(null)} />`}
       </main>
+      ${rowDialog?.type === "rename" && html`<${ConversationRenameDialog} conversation=${rowDialog} onClose=${() => setRowDialog(null)} />`}
+      ${rowDialog?.type === "delete" && html`<${ConversationDeleteDialog} actionId=${rowDialog.actionId}
+        complete=${rowDialog.actionId != null && deleteResult?.actionId === rowDialog.actionId && deleteResult.success}
+        pending=${rowDialog.actionId != null && state.conversationDelete?.actionId === rowDialog.actionId}
+        failed=${rowDialog.failed === true ||
+          (rowDialog.actionId != null && deleteResult?.actionId === rowDialog.actionId && !deleteResult.success)}
+        onConfirm=${() => {
+          const command = sync.deleteConversation(rowDialog.conversationId);
+          setRowDialog(command ? { ...rowDialog, actionId: command.actionId, failed: false } : { ...rowDialog, failed: true });
+        }}
+        onClose=${() => setRowDialog(null)} />`}
     </div>`;
 }

@@ -411,6 +411,8 @@ class AppContainer(
                 )
             },
             forkShare = chatRuntime.conversationForkShare,
+            conversationLifecycle = chatRuntime.conversationLifecycle,
+            generation = chatRuntime.messageGeneration,
             askUser = askUserController,
             shellConfirmation = shellConfirmationController,
             contextAccounting = com.newoether.agora.webui.WebUiContextAccounting(
@@ -461,6 +463,14 @@ class AppContainer(
                 ),
             ) { context, (blur, reduceMotion) ->
                 context.copy(blurEffectsEnabled = blur, reduceMotion = reduceMotion)
+            }.combine(
+                kotlinx.coroutines.flow.combine(
+                    settingsRepository.modelAliases,
+                    settingsRepository.modelProviderNames,
+                    ::Pair,
+                ),
+            ) { context, (aliases, providerNames) ->
+                context.copy(modelAliases = aliases, modelProviderNames = providerNames)
             },
         )
     }
